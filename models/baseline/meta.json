@@ -1,0 +1,11 @@
+{
+  "model_type": "sentiment",
+  "classes": [
+    "neg",
+    "neu",
+    "pos"
+  ],
+  "vectorizer": "tfidf",
+  "algorithm": "logistic_regression",
+  "version": "1.0"
+}

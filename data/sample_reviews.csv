@@ -1,0 +1,10 @@
+text,sentiment
+"Отличный товар, очень доволен покупкой!","pos"
+"Ужасное качество, сломалось через день.","neg"
+"Нормально, но могло быть и лучше.","neu"
+"Great value for the price, recommend it","pos"
+"Terrible experience, will not buy again","neg"
+"Okay item, nothing special","neu"
+"Потрясающее качество и быстрая доставка","pos"
+"Разочарован: пришло с дефектами","neg"
+"Средне, ожидал большего","neu"

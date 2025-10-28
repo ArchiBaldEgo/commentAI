@@ -1,0 +1,24 @@
+paths:
+  raw: data/reviews_raw.csv
+  labeled: data/reviews_labeled.csv
+  model_dir: models/production
+  urls_file: urls.txt
+
+scrape:
+  container: "div.review"
+  text_selector: null
+
+train:
+  test_size: 0.2
+  seed: 42
+  class_weight: balanced
+  max_features: 12000
+  char_ngrams: true
+  grid: false
+
+evaluate:
+  data: data/reviews_labeled.csv
+
+active_learning:
+  uncertainty_threshold: 0.45
+  output: data/uncertain.csv
