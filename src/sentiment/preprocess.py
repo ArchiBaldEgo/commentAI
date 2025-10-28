@@ -3,6 +3,7 @@ import string
 from typing import List
 
 from sklearn.base import BaseEstimator, TransformerMixin
+from .lexicon import RU_POS_LEXICON, RU_NEG_LEXICON, RU_PRICE, RU_DELIVERY, RU_QUALITY, RU_SERVICE
 
 # Простые списки стоп-слов (можно расширять)
 RU_STOP = {
@@ -56,6 +57,23 @@ def preprocess_text(text: str) -> str:
     tokens = tokenize(text)
     tokens = remove_stopwords(tokens)
     tokens = lemmatize(tokens)
+    # Лексикон: добавим специальные маркеры для усиления сигналов
+    toks_set = set(tokens)
+    tags: List[str] = []
+    if toks_set & RU_POS_LEXICON:
+        tags.append("__kw_pos")
+    if toks_set & RU_NEG_LEXICON:
+        tags.append("__kw_neg")
+    if toks_set & RU_PRICE:
+        tags.append("__aspect_price")
+    if toks_set & RU_DELIVERY:
+        tags.append("__aspect_delivery")
+    if toks_set & RU_QUALITY:
+        tags.append("__aspect_quality")
+    if toks_set & RU_SERVICE:
+        tags.append("__aspect_service")
+    if tags:
+        tokens.extend(tags)
     return " ".join(tokens)
 
 

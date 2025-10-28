@@ -23,4 +23,7 @@ label:
 pipeline:
 	$(PY) -m src.sentiment.pipeline --config $(CONFIG)
 
+serve:
+	$(PY) -m src.sentiment.cli serve --host 0.0.0.0 --port 8000 --model-dir models/online
+
 .PHONY: install train predict collect label pipeline
