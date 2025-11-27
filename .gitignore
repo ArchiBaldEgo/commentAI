@@ -1,0 +1,82 @@
+# ---- Python basics ----
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.pyo
+*.orig
+
+# Packaging / build
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# Virtual environments / tools
+.venv/
+venv/
+env/
+.python-version
+
+# Testing / coverage / caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.cache/
+
+# Logs
+logs/
+*.log
+
+# ---- Env & config ----
+.env
+.env.*
+!.env.example
+
+# ---- App data & artifacts ----
+# Keep curated datasets in git; ignore runtime/generated artifacts
+/data/feedback_buffer.jsonl
+/data/merged_for_train.csv
+/data/*.db
+/data/*.sqlite
+/data/*.sqlite3
+/data/*.log
+
+# Models (generated)
+/models/production/
+/models/version_*/
+
+# ---- Clients (TypeScript / Node) ----
+clients/**/node_modules/
+clients/**/dist/
+clients/**/build/
+clients/**/.turbo/
+clients/**/.next/
+clients/**/.cache/
+clients/**/coverage/
+clients/**/*.tsbuildinfo
+
+# ---- Editor / IDE ----
+.vscode/
+.idea/
+*.code-workspace
+
+# ---- OS junk ----
+.DS_Store
+Thumbs.db
+
+# ---- Notebooks ----
+.ipynb_checkpoints/
+
+# ---- Misc ----
+coverage/
+.tmp/
+.tmp/**

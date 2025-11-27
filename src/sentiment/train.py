@@ -1,118 +1,89 @@
+"""Тренировка продакшен‑модели: HashingVectorizer + TF‑IDF + SGDClassifier.
+
+Выбор сделан в пользу онлайновых свойств и стабильности в проде:
+- HashingVectorizer не требует словаря и экономит память
+- SGDClassifier поддерживает partial_fit для дообучения
+"""
+from __future__ import annotations
+import argparse
 import json
 import os
 from pathlib import Path
-import click
 import pandas as pd
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import classification_report
-from sklearn.linear_model import LogisticRegression, SGDClassifier
-from .model import SentimentClassifier
-from .utils import set_seed
+from sklearn.pipeline import Pipeline, FeatureUnion
+from sklearn.feature_extraction.text import HashingVectorizer, TfidfTransformer
+from sklearn.linear_model import SGDClassifier
+import joblib
 
-@click.command()
-@click.option('--data', 'data_path', required=True, type=click.Path(exists=True), help='CSV файл с данными')
-@click.option('--text-col', default='text', show_default=True, help='Имя колонки с текстом')
-@click.option('--label-col', default='sentiment', show_default=True, help='Имя колонки с меткой')
-@click.option('--model-dir', default='models/default', show_default=True, help='Директория для сохранения модели')
-@click.option('--test-size', default=0.2, show_default=True, help='Доля теста')
-@click.option('--seed', default=42, show_default=True, help='Seed')
-@click.option('--cv', default=3, show_default=True, help='Кросс-валидация для грид-серча')
-@click.option('--grid', is_flag=True, help='Запустить grid search гиперпараметров')
-@click.option('--class-weight', 'class_weight', default=None, show_default=True, help='class_weight для LogisticRegression (например balanced)')
-@click.option('--max-features', default=8000, show_default=True, help='tfidf max_features')
-@click.option('--char-ngrams', is_flag=True, help='Добавить символьные ngrams (Char TF-IDF)')
-@click.option('--verbose', is_flag=True, help='Подробный вывод')
-@click.option('--hashing', is_flag=True, help='Использовать HashingVectorizer (+TfidfTransformer) вместо TF-IDF')
-@click.option('--algo', type=click.Choice(['logreg','sgd']), default='logreg', show_default=True, help='Алгоритм классификатора')
-@click.option('--partial', is_flag=True, help='Инкрементальное partial_fit для SGD (игнорирует grid)')
-def main(data_path, text_col, label_col, model_dir, test_size, seed, cv, grid, class_weight, max_features, char_ngrams, verbose, hashing, algo, partial):
-    from sklearn.pipeline import Pipeline, FeatureUnion
-    from sklearn.feature_extraction.text import TfidfVectorizer, HashingVectorizer
-    from sklearn.feature_extraction.text import TfidfTransformer
-    from .preprocess import PreprocessTransformer
+from .preprocess import PreprocessTransformer
 
-    set_seed(seed)
-    df = pd.read_csv(data_path)
-    df = df.dropna(subset=[text_col, label_col])
-    X = df[text_col].astype(str).tolist()
-    y = df[label_col].astype(str).tolist()
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=seed, stratify=y)
-
-    text_pre = PreprocessTransformer()
-
-    if hashing:
-        # Hashing (не обучается, детерминированно), затем TfidfTransformer
-        if char_ngrams:
-            featurizer = FeatureUnion([
-                ('word', Pipeline([
-                    ('hv', HashingVectorizer(n_features=max_features, alternate_sign=False, ngram_range=(1,2))),
-                    ('tfidf', TfidfTransformer())
-                ])),
-                ('char', Pipeline([
-                    ('hv', HashingVectorizer(analyzer='char', n_features=10000, ngram_range=(3,5), alternate_sign=False)),
-                    ('tfidf', TfidfTransformer())
-                ]))
-            ])
-        else:
-            featurizer = Pipeline([
-                ('hv', HashingVectorizer(n_features=max_features, alternate_sign=False, ngram_range=(1,2))),
+def build_pipeline(char_ngrams: bool = True, n_features_word: int = 8000, n_features_char: int = 10000, class_weight=None):
+    """Конструируем пайплайн признаков и классификатор.
+    По умолчанию включены символьные n-граммы — помогают на «шумных» текстах.
+    """
+    if char_ngrams:
+        featurizer = FeatureUnion([
+            ('word', Pipeline([
+                ('hv', HashingVectorizer(n_features=n_features_word, alternate_sign=False, ngram_range=(1, 2))),
                 ('tfidf', TfidfTransformer())
-            ])
+            ])),
+            ('char', Pipeline([
+                ('hv', HashingVectorizer(analyzer='char', n_features=n_features_char, ngram_range=(3, 5), alternate_sign=False)),
+                ('tfidf', TfidfTransformer())
+            ]))
+        ])
     else:
-        if char_ngrams:
-            featurizer = FeatureUnion([
-                ('word', TfidfVectorizer(max_features=max_features, ngram_range=(1,2))),
-                ('char', TfidfVectorizer(analyzer='char', ngram_range=(3,5), max_features=10000))
-            ])
-        else:
-            featurizer = TfidfVectorizer(max_features=max_features, ngram_range=(1,2))
+        featurizer = Pipeline([
+            ('hv', HashingVectorizer(n_features=n_features_word, alternate_sign=False, ngram_range=(1, 2))),
+            ('tfidf', TfidfTransformer())
+        ])
 
-    if algo == 'logreg':
-        clf = LogisticRegression(max_iter=1500, class_weight=class_weight)
-    else:
-        clf = SGDClassifier(loss='log_loss', max_iter=10, class_weight=class_weight, random_state=seed)
+    # Логистическая регрессия на стероидах (через SGD) — поддерживает онлайн‑обучение
+    clf = SGDClassifier(loss='log_loss', max_iter=10, class_weight=class_weight, random_state=42)
 
     pipeline = Pipeline([
-        ('prep', text_pre),
+        ('prep', PreprocessTransformer()),
         ('tfidf', featurizer),
         ('clf', clf)
     ])
+    return pipeline
 
-    model = SentimentClassifier(pipeline=pipeline)
 
-    if algo == 'logreg' and grid and not hashing and not partial:
-        param_grid = {
-            'tfidf__word__max_features': [5000, max_features] if char_ngrams else [max_features],
-            'clf__C': [0.5, 1.0, 2.0]
-        }
-        gs = GridSearchCV(model.pipeline, param_grid=param_grid, cv=cv, n_jobs=-1, verbose=1)
-        gs.fit(X_train, y_train)
-        model.pipeline = gs.best_estimator_
-        if verbose:
-            print(f"Лучшие параметры: {gs.best_params_}")
+def main(args: list[str] | None = None):
+    """Точка входа для обучения из CLI и как функция.
+    На выход кладём артефакты в указанную директорию: model.joblib и meta.json.
+    """
+    parser = argparse.ArgumentParser(description="Train Hashing+SGD sentiment model")
+    parser.add_argument('--data', required=True, help='CSV with columns: text,label')
+    parser.add_argument('--model-dir', required=True, help='Output directory for model')
+    parser.add_argument('--class-weight', default=None, help='e.g. balanced')
+    parser.add_argument('--char-ngrams', action='store_true', help='Include char ngrams branch')
+    ns = parser.parse_args(args=args)
 
-    if algo == 'sgd' and partial:
-        # partial_fit по батчам
-        import numpy as np
-        classes = sorted(set(y_train))
-        batch_size = max(32, len(X_train)//20)
-        for i in range(0, len(X_train), batch_size):
-            xb = X_train[i:i+batch_size]
-            yb = y_train[i:i+batch_size]
-            model.pipeline.partial_fit(xb, yb, classes=classes)  # type: ignore
-        if verbose:
-            print("Partial fit завершен")
-    else:
-        model.fit(X_train, y_train)
+    df = pd.read_csv(ns.data)
+    label_col = 'label' if 'label' in df.columns else 'sentiment'
+    if 'text' not in df.columns or label_col not in df.columns:
+        raise ValueError('CSV must contain columns: text and label/sentiment')
+    X = df['text'].astype(str).tolist()
+    y = df[label_col].astype(str).tolist()
 
-    report = model.evaluate(X_test, y_test)
-    print(report)
+    pipe = build_pipeline(char_ngrams=ns.char_ngrams, class_weight=ns.class_weight)
+    pipe.fit(X, y)
 
-    os.makedirs(model_dir, exist_ok=True)
-    model.save(model_dir)
-    with open(os.path.join(model_dir, 'report.txt'), 'w', encoding='utf-8') as f:
-        f.write(report)
+    out_dir = Path(ns.model_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(pipe, out_dir / 'model.joblib')
+    meta = {
+        'algorithm': 'sgd',
+        'vectorizer': 'hashing+tfidf',
+        'char_ngrams': bool(ns.char_ngrams),
+        'classes': getattr(getattr(pipe, 'classes_', None), 'tolist', lambda: list(getattr(pipe, 'classes_', [])))()
+    }
+    with (out_dir / 'meta.json').open('w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    print(f"Saved model to {out_dir}")  # маленькое счастье тренера
 
 if __name__ == '__main__':
     main()

@@ -1,0 +1,31 @@
+version: "3.8"
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DB:-sentiment}
+      - MYSQL_USER=${MYSQL_USER:-sentiment}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-sentiment}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root}
+    command: ["--default-authentication-plugin=mysql_native_password"]
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u${MYSQL_USER:-sentiment}", "-p${MYSQL_PASSWORD:-sentiment}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  sentiment-api:
+    environment:
+      - STORAGE_MODE=db
+      - DB_URL=mysql+pymysql://${MYSQL_USER:-sentiment}:${MYSQL_PASSWORD:-sentiment}@mysql:3306/${MYSQL_DB:-sentiment}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysqldata:
+    driver: local
