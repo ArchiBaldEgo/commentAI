@@ -25,7 +25,7 @@ from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_
 
 from .inference import load_model_cached, predict_proba_texts, online_partial_fit
 from .storage import init_storage, store_feedback, store_product_score
-from .retrain_pipeline import run_retrain
+from .retrain_pipeline import run_retrain, RETRAIN_STATUS
 
 DATA_DIR = Path("data")
 SCORES_LOG = DATA_DIR / "product_scores.csv"
@@ -276,6 +276,7 @@ class PredictResponse(BaseModel):
     predictions: List[str]
     probabilities: List[List[float]]
     labels: List[str]
+    model_version: Optional[str] = None
 
 
 class FeedbackItem(BaseModel):
@@ -332,13 +333,38 @@ def predict(req: PredictRequest, request: Request, _: None = Depends(require_api
     if not req.texts:
         track("/predict", request.method, 400, start)
         raise HTTPException(400, "texts must be non-empty")
+    # Простая защита от слишком больших запросов
+    if len(req.texts) > 200:
+        track("/predict", request.method, 413, start)
+        raise HTTPException(413, "too many texts in one request (max 200)")
+    if any(len(t) > 5000 for t in req.texts):
+        track("/predict", request.method, 413, start)
+        raise HTTPException(413, "text too long (max 5000 characters)")
     model = load_model_cached(req.model_path)
+
+    # Пытаемся вытащить версию модели из meta.json
+    version: Optional[str] = None
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+
+        base = req.model_path or "models/production"
+        meta_path = _Path(base)
+        if meta_path.is_dir():
+            meta_path = meta_path / "meta.json"
+        if meta_path.exists():
+            meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+            version = meta.get("version")
+    except Exception:
+        version = None
+
     probs, preds, classes = predict_proba_texts(model, req.texts)
     track("/predict", request.method, 200, start)
     return PredictResponse(
         predictions=preds,
         probabilities=[list(map(float, p)) for p in probs],
         labels=classes,
+        model_version=version,
     )
 
 
@@ -368,6 +394,12 @@ def product_score(req: ProductScoreRequest, request: Request, _: None = Depends(
 def feedback(batch: FeedbackBatch, request: Request, _: None = Depends(require_api_key)):
     """Принимает пользовательскую разметку и кладёт её в файл/БД, а также в очередь online‑обучения."""
     start = time.time()
+    # Валидация меток на входе
+    allowed = {"neg", "neu", "pos"}
+    for it in batch.items:
+        if it.label not in allowed:
+            track("/feedback", request.method, 400, start)
+            raise HTTPException(400, f"invalid label '{it.label}', allowed: neg|neu|pos")
     # Persist feedback (file + optional DB)
     items = [{
         "text": it.text,
@@ -400,6 +432,22 @@ def retrain(request: Request, _: None = Depends(require_api_key)):
     threading.Thread(target=task, daemon=True).start()
     track("/retrain", request.method, 200, start)
     return {"status": "started"}
+
+
+@app.get("/retrain/status")
+def retrain_status(_: None = Depends(require_api_key)):
+    """Возвращает информацию о последнем запуске ретрейна из файла статуса."""
+    try:
+        import json as _json
+
+        if not RETRAIN_STATUS.exists():
+            raise HTTPException(404, "retrain status not found")
+        data = _json.loads(RETRAIN_STATUS.read_text(encoding="utf-8"))
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"cannot read retrain status: {e}")
 
 @app.get("/metrics")
 def metrics():

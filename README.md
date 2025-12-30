@@ -52,6 +52,31 @@ make api         # запустит API на 8000
 make check       # ждёт подъём /health
 ```
 
+## Обучение модели вручную
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m sentiment.train --data data/reviews_labeled.csv --model-dir models/production
+```
+Файл `data/reviews_labeled.csv` должен содержать колонки `text,label` со значениями `neg|neu|pos`.
+
+## Гибридный режим обучения
+- Онлайн: установите `ONLINE_LEARNING=1` — фидбек из `/feedback` будет добавляться в микро‑батчи для `partial_fit`.
+- Периодический ретрейн: включите `AUTO_RETRAIN_ENABLED=1` и настройте интервалы; либо вызывайте `/retrain` вручную.
+
+## Запуск с БД (PostgreSQL/MySQL)
+Переменные окружения:
+- `STORAGE_MODE=db` — включить запись в БД.
+- `DB_URL` — строка подключения SQLAlchemy: `postgresql+psycopg2://user:pass@host:5432/db` или `mysql+pymysql://user:pass@host:3306/db`.
+
+Docker Compose оверлеи:
+```bash
+# PostgreSQL
+docker compose -f docker-compose.yml -f deploy/compose.postgres.yml up -d
+# MySQL
+docker compose -f docker-compose.yml -f deploy/compose.mysql.yml up -d
+```
+Таблицы создаются автоматически: `feedback`, `product_scores`. Даже при режиме БД записи также дублируются в файлы (`data/feedback_buffer.jsonl`, `data/product_scores.csv`).
+
 ## Конфигурация (.env)
 - Security: `API_KEY=secret`
 - Онлайн‑обучение (гибрид):
@@ -62,7 +87,23 @@ make check       # ждёт подъём /health
 - Хранилище: `STORAGE_MODE=file|db`, `DB_URL=` (пусто → SQLite в `data/app.db`)
 	- PostgreSQL: `postgresql+psycopg2://user:pass@host:5432/db`
 	- MySQL: `mysql+pymysql://user:pass@host:3306/db`
-	- Для Docker Compose используйте готовые файлы `docker-compose.postgres.yml` и `docker-compose.mysql.yml`.
+	- Для Docker Compose используйте оверлеи `deploy/compose.postgres.yml` и `deploy/compose.mysql.yml`.
+
+## Запуск с БД (PostgreSQL/MySQL)
+
+- Переменные окружения:
+	- `STORAGE_MODE=db` — включить запись в БД
+	- `DB_URL` — строка подключения SQLAlchemy
+- Docker Compose оверлеи:
+	- PostgreSQL:
+		```bash
+		docker compose -f docker-compose.yml -f deploy/compose.postgres.yml up -d
+		```
+	- MySQL:
+		```bash
+		docker compose -f docker-compose.yml -f deploy/compose.mysql.yml up -d
+		```
+Таблицы создаются автоматически: `feedback` и `product_scores`.
 
 ## Эндпоинты
 - `GET /health` — состояние

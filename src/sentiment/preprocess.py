@@ -6,6 +6,12 @@
 from typing import Iterable, List
 from sklearn.base import BaseEstimator, TransformerMixin
 
+import re
+import string
+from typing import List
+
+from .lexicon import RU_POS_LEXICON, RU_NEG_LEXICON, RU_PRICE, RU_DELIVERY, RU_QUALITY, RU_SERVICE
+
 
 class PreprocessTransformer(BaseEstimator, TransformerMixin):
     """Упрощённый трансформер: чистим пробелы/регистр для базовой совместимости."""
@@ -20,12 +26,6 @@ class PreprocessTransformer(BaseEstimator, TransformerMixin):
         if not isinstance(text, str):
             text = str(text)
         return " ".join(text.strip().lower().split())
-import re
-import string
-from typing import List
-
-from sklearn.base import BaseEstimator, TransformerMixin
-from .lexicon import RU_POS_LEXICON, RU_NEG_LEXICON, RU_PRICE, RU_DELIVERY, RU_QUALITY, RU_SERVICE
 
 # Простые списки стоп-слов (можно расширять)
 RU_STOP = {

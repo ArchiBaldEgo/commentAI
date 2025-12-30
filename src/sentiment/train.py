@@ -65,8 +65,16 @@ def main(args: list[str] | None = None):
     label_col = 'label' if 'label' in df.columns else 'sentiment'
     if 'text' not in df.columns or label_col not in df.columns:
         raise ValueError('CSV must contain columns: text and label/sentiment')
-    X = df['text'].astype(str).tolist()
-    y = df[label_col].astype(str).tolist()
+    # Clean data: drop NaNs, trim spaces, keep only allowed labels
+    df = df[['text', label_col]].dropna()
+    df['text'] = df['text'].astype(str).str.strip()
+    df[label_col] = df[label_col].astype(str).str.strip().str.lower()
+    allowed = {'neg', 'neu', 'pos'}
+    df = df[df[label_col].isin(allowed)]
+    if df.empty:
+        raise ValueError('No valid rows after cleaning. Allowed labels: neg|neu|pos')
+    X = df['text'].tolist()
+    y = df[label_col].tolist()
 
     pipe = build_pipeline(char_ngrams=ns.char_ngrams, class_weight=ns.class_weight)
     pipe.fit(X, y)
