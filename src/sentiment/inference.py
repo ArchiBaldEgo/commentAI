@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Tuple, Optional
 import threading
+import os
 
 import joblib
 import numpy as np
@@ -41,25 +42,23 @@ def _build_pipeline() -> Pipeline:
     ])
 
 def build_default_pipeline() -> Pipeline:
-    """Создаём минимально «инициализированный» пайплайн.
+    """Создаём «инициализированный» пайплайн на случай отсутствия model.joblib.
 
-    Важно: нам нужен классификатор в состоянии fitted, чтобы predict/predict_proba
-    не падали на пустой или отсутствующей модели. Поэтому делаем маленький
-    partial_fit с тремя классами (neg/neu/pos) на искусственных примерах.
+    Требования:
+    - модель должна быть fitted, иначе predict/predict_proba упадут
+    - структура должна быть близка к train.py, чтобы поведение в демо было стабильнее
     """
-    prep = PreprocessTransformer()
-    hv = HashingVectorizer(n_features=2**16, alternate_sign=False)
-    clf = SGDClassifier(loss="log_loss", max_iter=5, tol=1e-3, random_state=42)
-    pipe = Pipeline([
-        ("prep", prep),
-        ("hv", hv),
-        ("clf", clf),
-    ])
+    # Локальный импорт, чтобы inference.py не тянул pandas при старте сервиса
+    from .train import build_pipeline
 
-    dummy_texts = ["очень хорошо", "нейтрально", "очень плохо"]
-    dummy_labels = np.array(["pos", "neu", "neg"])
-    Xv = hv.transform(prep.transform(dummy_texts))
-    clf.partial_fit(Xv, dummy_labels, classes=np.array(["neg", "neu", "pos"]))
+    pipe = build_pipeline(char_ngrams=True, class_weight="balanced")
+    dummy_texts = [
+        "очень хороший товар, рекомендую",
+        "обычно, ничего особенного",
+        "ужасно, полный брак",
+    ]
+    dummy_labels = ["pos", "neu", "neg"]
+    pipe.fit(dummy_texts, dummy_labels)
     return pipe
 
 @lru_cache(maxsize=1)
@@ -96,15 +95,64 @@ def online_partial_fit(texts: List[str], labels: List[str], model_path: Optional
     if not texts:
         return False
     model = load_model_cached(model_path)
-    clf = model.named_steps.get("clf")
+    clf = getattr(model, "named_steps", {}).get("clf")
     if clf is None or not hasattr(clf, "partial_fit"):
         return False
+
+    # Важно: sklearn.Pipeline не гарантирует наличие partial_fit,
+    # поэтому делаем ручной проход по шагам.
+    prep = getattr(model, "named_steps", {}).get("prep")
+    tfidf = getattr(model, "named_steps", {}).get("tfidf")
+    hv = getattr(model, "named_steps", {}).get("hv")
+
+    # Для UX в GUI полезно, чтобы единичный пример заметно влиял на вероятности.
+    # Для батчей из API делаем мягче.
+    try:
+        default_epochs = int(os.getenv("ONLINE_FIT_EPOCHS", "8"))
+    except Exception:
+        default_epochs = 8
+    epochs = max(1, default_epochs)
+    if len(texts) >= 8:
+        epochs = 1
+
     with _MODEL_UPDATE_LOCK:
-        # partial_fit на всём пайплайне — sklearn будет вызывать предварительную обработку корректно
-        classes = getattr(clf, "classes_", None)
-        kwargs = {"classes": classes} if classes is not None else {"classes": ["neg", "neu", "pos"]}
-        model.partial_fit(texts, labels, **kwargs)  # type: ignore
+        X = texts
+        if prep is not None and hasattr(prep, "transform"):
+            X = prep.transform(texts)
+
+        if tfidf is not None and hasattr(tfidf, "transform"):
+            Xv = tfidf.transform(X)
+        elif hv is not None and hasattr(hv, "transform"):
+            Xv = hv.transform(X)
+        else:
+            # не смогли построить признаки
+            return False
+
+        y = np.array(labels)
+
+        # class_weight='balanced' ломается на partial_fit, если в y не представлены
+        # все классы. Для онлайн-апдейтов временно отключаем балансировку.
+        orig_cw = getattr(clf, "class_weight", None)
+        if orig_cw == "balanced":
+            try:
+                clf.class_weight = None
+            except Exception:
+                orig_cw = None
+
+        try:
+            for _ in range(epochs):
+                if hasattr(clf, "classes_"):
+                    clf.partial_fit(Xv, y)
+                else:
+                    clf.partial_fit(Xv, y, classes=np.array(["neg", "neu", "pos"]))
+        finally:
+            if orig_cw == "balanced":
+                try:
+                    clf.class_weight = orig_cw
+                except Exception:
+                    pass
         save_model(model, model_path)
+
     return True
 
 

@@ -14,6 +14,7 @@ DATA_DIR = Path("data")
 FEEDBACK_FILE = DATA_DIR / "feedback_buffer.jsonl"
 LABELED_FILE = DATA_DIR / "reviews_labeled.csv"
 HARD_CASES_FILE = DATA_DIR / "hard_cases_labeled.csv"
+SYNTH_LABELED_FILE = DATA_DIR / "reviews_labeled_synth.csv"
 MODELS_DIR = Path("models")
 PROD_DIR = MODELS_DIR / "production"
 VERSIONS_DIR = MODELS_DIR / "versions"
@@ -92,6 +93,14 @@ def merge_labeled_and_feedback() -> tuple[Path, int, int, int]:
             df_hard = df_hard[["text", "label"]].dropna()
             if not df_hard.empty:
                 frames.append(df_hard)
+
+    # добавляем синтетическую разметку (если файл есть)
+    if SYNTH_LABELED_FILE.exists():
+        df_synth = _read_labeled_csv_robust(SYNTH_LABELED_FILE)
+        if {"text", "label"}.issubset(df_synth.columns):
+            df_synth = df_synth[["text", "label"]].dropna()
+            if not df_synth.empty:
+                frames.append(df_synth)
 
     if FEEDBACK_FILE.exists():
         rows = []

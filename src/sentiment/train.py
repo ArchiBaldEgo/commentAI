@@ -19,7 +19,7 @@ import joblib
 from .preprocess import PreprocessTransformer
 
 
-def build_pipeline(char_ngrams: bool = True, n_features_word: int = 8000, n_features_char: int = 10000, class_weight=None):
+def build_pipeline(char_ngrams: bool = True, n_features_word: int = 2**17, n_features_char: int = 2**17, class_weight=None):
     """Конструируем пайплайн признаков и классификатор.
     По умолчанию включены символьные n-граммы — помогают на «шумных» текстах.
     """
@@ -41,7 +41,13 @@ def build_pipeline(char_ngrams: bool = True, n_features_word: int = 8000, n_feat
         ])
 
     # Логистическая регрессия на стероидах (через SGD) — поддерживает онлайн‑обучение
-    clf = SGDClassifier(loss='log_loss', max_iter=10, class_weight=class_weight, random_state=42)
+    clf = SGDClassifier(
+        loss='log_loss',
+        max_iter=25,
+        alpha=1e-5,
+        class_weight=class_weight,
+        random_state=42,
+    )
 
     pipeline = Pipeline([
         ('prep', PreprocessTransformer()),

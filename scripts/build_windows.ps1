@@ -60,12 +60,32 @@ Copy-Item -Path (Join-Path $ProjectRoot "data\reviews_labeled.csv") -Destination
 if (Test-Path (Join-Path $ProjectRoot "data\hard_cases_labeled.csv")) {
   Copy-Item -Path (Join-Path $ProjectRoot "data\hard_cases_labeled.csv") -Destination (Join-Path $demoDir "data")
 }
+if (Test-Path (Join-Path $ProjectRoot "data\reviews_labeled_synth.csv")) {
+  Copy-Item -Path (Join-Path $ProjectRoot "data\reviews_labeled_synth.csv") -Destination (Join-Path $demoDir "data")
+}
+
+# seed: ship curated starter examples (tracked in git)
+if (Test-Path (Join-Path $ProjectRoot "data\seed_feedback.jsonl")) {
+  Copy-Item -Path (Join-Path $ProjectRoot "data\seed_feedback.jsonl") -Destination (Join-Path $demoDir "data")
+}
 # optional: if you want to ship current feedback/status
 if (Test-Path (Join-Path $ProjectRoot "data\feedback_buffer.jsonl")) {
   Copy-Item -Path (Join-Path $ProjectRoot "data\feedback_buffer.jsonl") -Destination (Join-Path $demoDir "data")
 }
 if (Test-Path (Join-Path $ProjectRoot "data\retrain_status.json")) {
   Copy-Item -Path (Join-Path $ProjectRoot "data\retrain_status.json") -Destination (Join-Path $demoDir "data")
+}
+
+# Pre-generate feedback_buffer.jsonl in the release folder so the demo
+# has ready-to-use examples immediately after unzip (even on a fresh PC).
+try {
+  $prev = Get-Location
+  Set-Location $demoDir
+  $env:PYTHONPATH = (Join-Path $ProjectRoot "src")
+  python -c "from sentiment.storage import ensure_feedback_seed; ensure_feedback_seed(200)"
+} finally {
+  Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+  if ($prev) { Set-Location $prev }
 }
 
 # models: ship production model; versions folder will be created automatically

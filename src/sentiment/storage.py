@@ -17,6 +17,7 @@ from sqlalchemy.engine import Engine
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FEEDBACK_FILE = DATA_DIR / "feedback_buffer.jsonl"
+SEED_FEEDBACK_FILE = DATA_DIR / "seed_feedback.jsonl"
 SCORES_CSV = DATA_DIR / "product_scores.csv"
 
 STORAGE_MODE = os.getenv("STORAGE_MODE", "file").lower()  # 'file' | 'db'
@@ -62,6 +63,145 @@ def init_storage():
     """Инициализируем БД, если она включена настройками."""
     if STORAGE_MODE == "db" or DB_URL:
         _ensure_db()
+
+    # На свежем устройстве feedback_buffer.jsonl может отсутствовать
+    # (его нет в git по умолчанию). Чтобы у преподавателя сразу были
+    # «готовые слова», подсеваем буфер из seed/CSV.
+    try:
+        ensure_feedback_seed(min_lines=int(os.getenv("FEEDBACK_SEED_MIN_LINES", "200")))
+    except Exception:
+        pass
+
+
+def _iter_seed_examples() -> Iterable[dict]:
+    """Итерируем стартовые примеры для заполнения feedback_buffer.jsonl.
+
+    Источники (в порядке приоритета):
+    1) data/seed_feedback.jsonl (tracked in git)
+    2) data/reviews_labeled.csv + data/hard_cases_labeled.csv
+    """
+    # 1) Seed JSONL, если он существует
+    if SEED_FEEDBACK_FILE.exists():
+        try:
+            with SEED_FEEDBACK_FILE.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    text = rec.get("text")
+                    label = rec.get("label")
+                    if isinstance(text, str) and text.strip() and isinstance(label, str) and label.strip():
+                        yield {"text": " ".join(text.split()), "label": label.strip().lower(), "source": "seed"}
+        except OSError:
+            pass
+
+    # 2) CSV-датасеты
+    for csv_name in ("reviews_labeled.csv", "hard_cases_labeled.csv"):
+        p = DATA_DIR / csv_name
+        if not p.exists():
+            continue
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                header_seen = False
+                for raw_line in f:
+                    line = raw_line.strip("\n\r")
+                    if not line.strip():
+                        continue
+                    if not header_seen:
+                        header_seen = True
+                        continue
+                    parts = [x.strip() for x in line.split(",")]
+                    if len(parts) < 2:
+                        continue
+                    label = parts[-1].strip().lower()
+                    text = ",".join(parts[:-1]).strip()
+                    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+                        text = text[1:-1]
+                    text = " ".join(text.split())
+                    if not text:
+                        continue
+                    if label not in {"neg", "neu", "pos"}:
+                        continue
+                    yield {"text": text, "label": label, "source": f"seed:{csv_name}"}
+        except OSError:
+            continue
+
+
+def ensure_feedback_seed(min_lines: int = 40) -> int:
+    """Гарантирует, что feedback_buffer.jsonl не пустой.
+
+    Если файл отсутствует или содержит слишком мало строк —
+    добавляем примеры из seed/CSV, с дедупликацией по тексту.
+    Возвращает количество добавленных строк.
+    """
+    min_lines = max(0, int(min_lines))
+
+    def _count_lines(p: Path) -> int:
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                return sum(1 for _ in f)
+        except FileNotFoundError:
+            return 0
+        except OSError:
+            return 0
+
+    current = _count_lines(FEEDBACK_FILE)
+    if current >= min_lines:
+        return 0
+
+    seen: set[str] = set()
+    if FEEDBACK_FILE.exists():
+        try:
+            with FEEDBACK_FILE.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    text = rec.get("text")
+                    if isinstance(text, str) and text.strip():
+                        seen.add(" ".join(text.split()).lower())
+        except OSError:
+            pass
+
+    # Дозаполняем до min_lines
+    to_write: list[dict] = []
+    for rec in _iter_seed_examples():
+        text = rec.get("text")
+        label = rec.get("label")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if label not in {"neg", "neu", "pos"}:
+            continue
+        key = " ".join(text.split()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        to_write.append({
+            "ts": time.time(),
+            "text": " ".join(text.split()),
+            "label": label,
+            "source": rec.get("source") or "seed",
+            "user_id": None,
+        })
+        if current + len(to_write) >= min_lines:
+            break
+
+    if not to_write:
+        return 0
+
+    FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with FEEDBACK_FILE.open("a", encoding="utf-8") as f:
+        for rec in to_write:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return len(to_write)
 
 
 def store_feedback(items: Iterable[dict]):

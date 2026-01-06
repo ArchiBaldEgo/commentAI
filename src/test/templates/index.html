@@ -84,7 +84,7 @@
     </p>
     <ul>
         {% for label, p in last_probs.items() %}
-            <li>{{ label }}: {{ '%.2f' % (p * 100) }}%</li>
+            <li>{{ label }}: {{ '%.4f' % (p * 100) }}%</li>
         {% endfor %}
         {% if last_pred_label %}
             <li><strong>Предсказание модели:</strong> {{ last_pred_label }}</li>

@@ -37,8 +37,9 @@ from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from sentiment.inference import load_model_cached, predict_proba_texts
+from sentiment.inference import load_model_cached, predict_proba_texts, online_partial_fit
 from sentiment.retrain_pipeline import run_retrain
+from sentiment.storage import init_storage, store_feedback
 
 # Исправляем путь к шаблонам для PyInstaller
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
@@ -65,6 +66,14 @@ LAST_PROBS: dict | None = None  # вероятности для последне
 LAST_PRED_LABEL: str | None = None
 LAST_SAVED_LABEL: str | None = None
 LAST_MODEL_VERSION: str | None = None
+
+
+@app.on_event("startup")
+def _startup_seed_data() -> None:
+    # Чтобы на новом устройстве (Windows) буфер не был пустым,
+    # а преподавателю сразу показывались готовые примеры.
+    init_storage()
+    _load_history()
 
 
 def _read_json_file(path: Path) -> dict | None:
@@ -203,8 +212,20 @@ async def predict(comment: str = Form(...), label_override: str = Form("model"))
     # Для доказуемого обучения: преподаватель может выбрать "правильную" метку.
     allowed = {"neg", "neu", "pos"}
     saved_label = pred_label
-    if label_override in allowed:
+    user_overrode = label_override in allowed
+    if user_overrode:
         saved_label = label_override
+
+    # Если пользователь поправил метку — сразу дообучим модель и
+    # пересчитаем вероятности, чтобы в UI было видно изменение.
+    if user_overrode:
+        try:
+            online_partial_fit([comment], [saved_label], None)
+            # модель в кеше уже обновлена, но пересчёт вероятностей нужен для отображения
+            probs, preds, labels = predict_proba_texts(model, [comment])
+            pred_label = preds[0]
+        except Exception:
+            pass
 
     global LAST_PROBS
     LAST_PROBS = {labels[i]: float(probs[0][i]) for i in range(len(labels))}
@@ -214,8 +235,9 @@ async def predict(comment: str = Form(...), label_override: str = Form("model"))
     LAST_SAVED_LABEL = saved_label
     LAST_MODEL_VERSION = _get_model_version()
 
-    # Оценку показываем по решению модели (pred_label), а сохраняем для обучения saved_label.
-    score = label_to_score(pred_label, LAST_PROBS)
+    # Важно для UX: если пользователь выставил метку вручную,
+    # оценка/среднее должны следовать этой метке.
+    score = label_to_score(saved_label, LAST_PROBS)
 
     COMMENTS.append({
         "text": comment,
@@ -224,20 +246,19 @@ async def predict(comment: str = Form(...), label_override: str = Form("model"))
         "score": score,
     })
 
-    # пишем в feedback_buffer.jsonl, чтобы данные участвовали в ретрейне
-    from sentiment.storage import DATA_DIR, FEEDBACK_FILE
-
-    DATA_DIR.mkdir(exist_ok=True, parents=True)
-    fb_path = FEEDBACK_FILE
-    with fb_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({
-            "ts": time.time(),
+    # пишем в feedback_buffer.jsonl через общий сторедж (файл + опционально БД)
+    try:
+        store_feedback([{
             "text": comment,
             "label": saved_label,
+            "source": "gui",
+            "user_id": None,
             "predicted": pred_label,
             "probs": LAST_PROBS,
             "model_version": LAST_MODEL_VERSION,
-        }, ensure_ascii=False) + "\n")
+        }])
+    except Exception:
+        pass
     return RedirectResponse("/", status_code=303)
 
 
@@ -259,7 +280,8 @@ if __name__ == "__main__":
     import uvicorn
     from time import sleep
 
-    # при старте поднимаем историю комментариев из файла
+    # На старте инициализируем сторедж и поднимаем историю комментариев.
+    init_storage()
     _load_history()
 
     def auto_retrain_loop() -> None:
