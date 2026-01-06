@@ -40,11 +40,25 @@ from fastapi.templating import Jinja2Templates
 from sentiment.inference import load_model_cached, predict_proba_texts
 from sentiment.retrain_pipeline import run_retrain
 
-BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+# Исправляем путь к шаблонам для PyInstaller
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    # В режиме exe (onefile) шаблоны лежат в _MEIPASS/templates
+    BASE_DIR = Path(sys._MEIPASS)
+else:
+    # В режиме разработки или onedir — шаблоны в папке рядом с server.py
+    BASE_DIR = Path(__file__).resolve().parent
+
 TEMPLATES_DIR = BASE_DIR / "templates"
 
 app = FastAPI(title="commentAI test GUI")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# Debug: убедимся, что шаблоны найдены
+if not TEMPLATES_DIR.exists():
+    raise FileNotFoundError(
+        f"Папка с шаблонами не найдена: {TEMPLATES_DIR}\n"
+        f"APP_ROOT={APP_ROOT}, BASE_DIR={BASE_DIR}, frozen={getattr(sys, 'frozen', False)}"
+    )
 
 COMMENTS: List[dict] = []
 LAST_PROBS: dict | None = None  # вероятности для последнего комментария

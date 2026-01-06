@@ -8,7 +8,8 @@ a = Analysis(
     datas=[('src/test/templates', 'templates')],
     # Starlette подгружает Jinja2 динамически; в onefile PyInstaller иногда
     # не подхватывает зависимость без явного hiddenimport.
-    hiddenimports=['jinja2'],
+    # FastAPI требует python-multipart для работы с Form данными
+    hiddenimports=['jinja2', 'multipart'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

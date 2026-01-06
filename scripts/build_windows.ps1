@@ -21,6 +21,13 @@ python -m pip install -r requirements.txt pyinstaller
 # 2) build
 pyinstaller commentAI-test.spec
 
+# Clean previous release artifacts
+$releaseRoot = Join-Path $ProjectRoot "release"
+if (Test-Path $releaseRoot) {
+  Remove-Item $releaseRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Path $releaseRoot | Out-Null
+
 # 3) assemble release folder
 $releaseRoot = Join-Path $ProjectRoot "release"
 $demoDir = Join-Path $releaseRoot "commentAI-demo"
