@@ -9,11 +9,11 @@ if str(BASE_DIR) not in sys.path:
 from sentiment.inference import load_model_cached, predict_proba_texts
 
 
-LABEL_TO_SCORE = {"neg": 1.0, "neu": 3.0, "pos": 5.0}
+LABEL_TO_SCORE = {"neg": 1.0, "neu": 2.0, "pos": 3.0}
 
 
 def sentiment_to_stars(label: str) -> int:
-    return int(LABEL_TO_SCORE.get(label, 3.0))
+    return int(LABEL_TO_SCORE.get(label, 2.0))
 
 
 def main() -> None:
@@ -43,7 +43,7 @@ def main() -> None:
         label = preds[i]
         stars = sentiment_to_stars(label)
         print(f"[{i+1}] {text}")
-        print(f"   Тональность: {label}  | рейтинг: {stars}/5")
+        print(f"   Тональность: {label}  | рейтинг: {stars}/3")
     print("\nГотово.")
 
 

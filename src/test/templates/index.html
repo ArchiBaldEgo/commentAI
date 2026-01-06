@@ -101,7 +101,7 @@
 
     {% if avg_score is not none %}
     <div class="avg">
-        Средняя оценка всех комментариев: {{ '%.2f' % avg_score }}/5
+        Средняя оценка всех комментариев: {{ '%.2f' % avg_score }}/3
     </div>
     {% endif %}
 
@@ -111,7 +111,7 @@
             <div class="comment">
                 <div>{{ c.text }}</div>
                 <div class="score">
-                    Оценка: {{ '%.1f' % c.score }}/5,
+                    Оценка: {{ '%.1f' % c.score }}/3,
                     Тональность (модель):
                     <span class="label-{{ c.pred_label or c.label }}">{{ c.pred_label or c.label }}</span>
                     {% if c.pred_label and c.label and c.pred_label != c.label %}

@@ -31,7 +31,7 @@ DATA_DIR = Path("data")
 SCORES_LOG = DATA_DIR / "product_scores.csv"
 SCORES_LOG.parent.mkdir(parents=True, exist_ok=True)
 
-LABEL_TO_SCORE = {"neg": 1.0, "neu": 3.0, "pos": 5.0}
+LABEL_TO_SCORE = {"neg": 1.0, "neu": 2.0, "pos": 3.0}
 
 app = FastAPI(title="Sentiment Service", version="1.0")
 
@@ -382,7 +382,7 @@ def product_score(req: ProductScoreRequest, request: Request, _: None = Depends(
     points = []
     for label in preds:
         counts[label] = counts.get(label, 0) + 1
-        points.append(LABEL_TO_SCORE.get(label, 3.0))
+        points.append(LABEL_TO_SCORE.get(label, 2.0))
     score = float(sum(points) / len(points)) if points else 0.0
     # Persist via storage (file + optional DB)
     store_product_score(req.productId, score, counts)
