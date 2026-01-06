@@ -45,34 +45,16 @@
     <label for="comment">Комментарий:</label><br>
     <textarea id="comment" name="comment" required></textarea><br>
 
-    <label for="label_override"><strong>Разметка для дообучения (доказательство обучения)</strong></label><br>
-    <select id="label_override" name="label_override">
-        <option value="model" selected>как сказала модель (не исправлять)</option>
-        <option value="pos">pos (позитив)</option>
-        <option value="neu">neu (нейтрально)</option>
-        <option value="neg">neg (негатив)</option>
-    </select>
-    <br><br>
-
     <button type="submit">Отправить</button>
-</form>
-
-<form method="post" action="/retrain_now" style="margin-top: 0;">
-    <button type="submit">Переобучить модель сейчас (retrain)</button>
-    <div style="font-size: 0.9rem; color: #555; margin-top: 0.25rem;">
-        Кнопка запускает переобучение в фоне. После ~1–10 секунд обновите страницу и проверьте VERSION/статус.
-    </div>
 </form>
 
     <p>
         <strong>Подсказка.</strong><br>
-        Модель использует простый статистический подход (Pipeline scikit-learn)
-        и обучена на ограниченном стартовом наборе размеченных отзывов
-        (порядка нескольких сотен примеров). Дополнительно она постоянно
-        дообучается на комментариях, которые вы вводите в эту форму.
-        Для промышленных систем обычно используют тысячи и десятки тысяч
-        примеров, поэтому здесь демонстрируется именно учебный прототип,
-        а не промышленная модель.
+        Модель сама выставляет метку тональности для каждого нового комментария.
+        Если прогноз неверный, преподаватель может исправить оценку ниже —
+        в блоке «Последние комментарии» у нужной записи.
+        Исправления сохраняются и учитываются моделью для будущих похожих комментариев.
+        Дополнительно модель переобучается автоматически после нескольких исправлений.
     </p>
 
     {% if last_probs %}
@@ -118,6 +100,20 @@
                         <span style="color:#555; font-weight: normal;"> | разметка для обучения: {{ c.label }}</span>
                     {% endif %}
                 </div>
+
+                <form method="post" action="/update_label" style="margin-top: 0.5rem;">
+                    <input type="hidden" name="idx" value="{{ c.idx }}">
+                    <label><strong>Изменить оценку:</strong></label>
+                    <select name="new_label" required>
+                        <option value="pos" {% if c.label == 'pos' %}selected{% endif %}>pos</option>
+                        <option value="neu" {% if c.label == 'neu' %}selected{% endif %}>neu</option>
+                        <option value="neg" {% if c.label == 'neg' %}selected{% endif %}>neg</option>
+                    </select>
+                    <button type="submit">Сохранить</button>
+                    <div style="font-size: 0.85rem; color: #555; margin-top: 0.25rem;">
+                        После сохранения страница перезагрузится и покажет вашу оценку.
+                    </div>
+                </form>
             </div>
         {% endfor %}
     {% else %}

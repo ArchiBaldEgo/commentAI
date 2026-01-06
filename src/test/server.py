@@ -5,6 +5,7 @@ import os
 import json
 import time
 from threading import Thread
+import threading
 
 
 def _get_app_root() -> Path:
@@ -66,6 +67,117 @@ LAST_PROBS: dict | None = None  # вероятности для последне
 LAST_PRED_LABEL: str | None = None
 LAST_SAVED_LABEL: str | None = None
 LAST_MODEL_VERSION: str | None = None
+
+# локальное состояние для автопереобучения GUI
+GUI_STATE_FILE = APP_ROOT / "data" / "gui_state.json"
+_GUI_STATE_LOCK = threading.Lock()
+_RETRAIN_LOCK = threading.Lock()
+_RETRAIN_THREAD_RUNNING = False
+
+
+def _read_gui_state() -> dict:
+    try:
+        if GUI_STATE_FILE.exists():
+            return json.loads(GUI_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {"since_last_retrain": 0}
+
+
+def _write_gui_state(state: dict) -> None:
+    try:
+        GUI_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        GUI_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _inc_and_maybe_retrain() -> None:
+    """Триггерим retrain каждые 5 исправлений преподавателя.
+
+    Мы увеличиваем счётчик только когда преподаватель меняет метку,
+    чтобы не переобучать модель на «псевдоразметке» самой модели.
+    """
+    global _RETRAIN_THREAD_RUNNING
+    with _GUI_STATE_LOCK:
+        state = _read_gui_state()
+        n = int(state.get("since_last_retrain", 0)) + 1
+        if n < 5:
+            state["since_last_retrain"] = n
+            _write_gui_state(state)
+            return
+        # достигли порога
+        state["since_last_retrain"] = 0
+        state["last_triggered_at"] = time.time()
+        _write_gui_state(state)
+
+    # не запускаем несколько retrain параллельно
+    with _RETRAIN_LOCK:
+        if _RETRAIN_THREAD_RUNNING:
+            return
+        _RETRAIN_THREAD_RUNNING = True
+
+    def task() -> None:
+        global _RETRAIN_THREAD_RUNNING
+        try:
+            run_retrain()
+        except Exception:
+            pass
+        finally:
+            with _RETRAIN_LOCK:
+                _RETRAIN_THREAD_RUNNING = False
+
+    Thread(target=task, daemon=True).start()
+
+
+def _load_feedback_records() -> list[dict]:
+    from sentiment.storage import FEEDBACK_FILE
+
+    records: list[dict] = []
+    if not FEEDBACK_FILE.exists():
+        return records
+
+    try:
+        with FEEDBACK_FILE.open("r", encoding="utf-8") as f:
+            for idx, line in enumerate(f):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                text = rec.get("text")
+                label = rec.get("label")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                if not isinstance(label, str) or label.strip().lower() not in {"neg", "neu", "pos"}:
+                    continue
+                rec = dict(rec)
+                rec["_idx"] = idx
+                rec["text"] = " ".join(text.split())
+                rec["label"] = label.strip().lower()
+                records.append(rec)
+    except OSError:
+        return []
+
+    return records
+
+
+def _rewrite_feedback_file(records: list[dict]) -> None:
+    from sentiment.storage import FEEDBACK_FILE
+
+    FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Сохраняем порядок как в файле: по _idx
+    records_sorted = sorted(records, key=lambda r: int(r.get("_idx", 0)))
+    with FEEDBACK_FILE.open("w", encoding="utf-8") as f:
+        for rec in records_sorted:
+            out = dict(rec)
+            out.pop("_idx", None)
+            # гарантируем ts
+            if "ts" not in out:
+                out["ts"] = time.time()
+            f.write(json.dumps(out, ensure_ascii=False) + "\n")
 
 
 @app.on_event("startup")
@@ -135,36 +247,22 @@ def _load_history() -> None:
     перезапуска сервера на странице снова отображались предыдущие
     комментарии и их оценки.
     """
-    from sentiment.storage import FEEDBACK_FILE
-
-    if not FEEDBACK_FILE.exists():
-        return
-
-    try:
-        with FEEDBACK_FILE.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                text = rec.get("text")
-                label = rec.get("label")
-                pred_label = rec.get("predicted")
-                if not text or not label:
-                    continue
-                score = label_to_score(str(label))
-                COMMENTS.append({
-                    "text": text,
-                    "label": str(label),
-                    "pred_label": str(pred_label) if pred_label else None,
-                    "score": score,
-                })
-    except OSError:
-        # если файл по какой-то причине недоступен — просто пропускаем
-        pass
+    COMMENTS.clear()
+    records = _load_feedback_records()
+    for rec in records:
+        text = rec.get("text")
+        label = rec.get("label")
+        pred_label = rec.get("predicted")
+        if not text or not label:
+            continue
+        score = label_to_score(str(label))
+        COMMENTS.append({
+            "idx": int(rec.get("_idx", 0)),
+            "text": str(text),
+            "label": str(label),
+            "pred_label": str(pred_label) if pred_label else None,
+            "score": score,
+        })
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -200,7 +298,7 @@ async def index(request: Request):
 
 
 @app.post("/predict")
-async def predict(comment: str = Form(...), label_override: str = Form("model")):
+async def predict(comment: str = Form(...)):
     comment = comment.strip()
     if not comment:
         return RedirectResponse("/", status_code=303)
@@ -209,23 +307,10 @@ async def predict(comment: str = Form(...), label_override: str = Form("model"))
     probs, preds, labels = predict_proba_texts(model, [comment])
     pred_label = preds[0]
 
-    # Для доказуемого обучения: преподаватель может выбрать "правильную" метку.
-    allowed = {"neg", "neu", "pos"}
+    # При отправке мы НЕ просим «оценку преподавателя».
+    # Метка по умолчанию = предсказание модели. Если прогноз неверный —
+    # преподаватель исправляет метку у уже добавленного комментария.
     saved_label = pred_label
-    user_overrode = label_override in allowed
-    if user_overrode:
-        saved_label = label_override
-
-    # Если пользователь поправил метку — сразу дообучим модель и
-    # пересчитаем вероятности, чтобы в UI было видно изменение.
-    if user_overrode:
-        try:
-            online_partial_fit([comment], [saved_label], None)
-            # модель в кеше уже обновлена, но пересчёт вероятностей нужен для отображения
-            probs, preds, labels = predict_proba_texts(model, [comment])
-            pred_label = preds[0]
-        except Exception:
-            pass
 
     global LAST_PROBS
     LAST_PROBS = {labels[i]: float(probs[0][i]) for i in range(len(labels))}
@@ -259,20 +344,56 @@ async def predict(comment: str = Form(...), label_override: str = Form("model"))
         }])
     except Exception:
         pass
+
+    # Перечитываем историю, чтобы у нового комментария появился idx для редактирования.
+    _load_history()
     return RedirectResponse("/", status_code=303)
 
 
-@app.post("/retrain_now")
-async def retrain_now():
-    """Ручной запуск переобучения (для демонстрации преподавателю)."""
+@app.post("/update_label")
+async def update_label(idx: int = Form(...), new_label: str = Form(...)):
+    """Обновляем метку у уже существующего комментария (по индексу строки в JSONL).
 
-    def task() -> None:
-        try:
-            run_retrain()
-        except Exception:
-            pass
+    После обновления перезагружаем список и редиректим на главную.
+    """
+    new_label = (new_label or "").strip().lower()
+    if new_label not in {"neg", "neu", "pos"}:
+        return RedirectResponse("/", status_code=303)
 
-    Thread(target=task, daemon=True).start()
+    records = _load_feedback_records()
+    target = None
+    for rec in records:
+        if int(rec.get("_idx", -1)) == int(idx):
+            target = rec
+            break
+    if target is None:
+        return RedirectResponse("/", status_code=303)
+
+    old_label = str(target.get("label", "")).strip().lower()
+    target["label"] = new_label
+    target["edited_ts"] = time.time()
+    target["edited_by"] = "gui"
+
+    # Если исправили метку — подстраиваем модель онлайн и обновляем predicted/probs
+    try:
+        text = str(target.get("text", "")).strip()
+        if text:
+            online_partial_fit([text], [new_label], None)
+            model = load_model_cached(None)
+            probs, preds, classes = predict_proba_texts(model, [text])
+            pred_label = preds[0]
+            target["predicted"] = pred_label
+            target["probs"] = {classes[i]: float(probs[0][i]) for i in range(len(classes))}
+            target["model_version"] = _get_model_version()
+    except Exception:
+        pass
+
+    _rewrite_feedback_file(records)
+    _load_history()
+
+    if new_label != old_label:
+        _inc_and_maybe_retrain()
+
     return RedirectResponse("/", status_code=303)
 
 
@@ -283,18 +404,5 @@ if __name__ == "__main__":
     # На старте инициализируем сторедж и поднимаем историю комментариев.
     init_storage()
     _load_history()
-
-    def auto_retrain_loop() -> None:
-        while True:
-            try:
-                run_retrain()
-            except Exception:
-                # для простого GUI можно молча игнорировать ошибки
-                pass
-            sleep(10)
-
-    # фоновая переобучалка каждые 10 секунд
-    t = Thread(target=auto_retrain_loop, daemon=True)
-    t.start()
 
     uvicorn.run(app, host="127.0.0.1", port=9000)
