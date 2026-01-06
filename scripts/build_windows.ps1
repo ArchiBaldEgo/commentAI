@@ -30,7 +30,22 @@ if (Test-Path $demoDir) {
 }
 New-Item -ItemType Directory -Path $demoDir | Out-Null
 
-Copy-Item -Path (Join-Path $ProjectRoot "dist\commentAI-test\commentAI-test.exe") -Destination $demoDir
+# PyInstaller может собрать бинарь как:
+# - onefile: dist\commentAI-test.exe
+# - onedir:  dist\commentAI-test\commentAI-test.exe
+$exeCandidates = @(
+  (Join-Path $ProjectRoot "dist\commentAI-test\commentAI-test.exe"),
+  (Join-Path $ProjectRoot "dist\commentAI-test.exe")
+)
+
+$exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-Not $exePath) {
+  Write-Host "Contents of dist/:"
+  Get-ChildItem -Path (Join-Path $ProjectRoot "dist") -Recurse -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table -AutoSize
+  throw "Built exe not found in dist/. Expected one of: $($exeCandidates -join ', ')"
+}
+
+Copy-Item -Path $exePath -Destination $demoDir
 
 # data: copy minimal required files
 New-Item -ItemType Directory -Path (Join-Path $demoDir "data") | Out-Null
