@@ -6,7 +6,9 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[('src/test/templates', 'templates')],
-    hiddenimports=[],
+    # Starlette подгружает Jinja2 динамически; в onefile PyInstaller иногда
+    # не подхватывает зависимость без явного hiddenimport.
+    hiddenimports=['jinja2'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
