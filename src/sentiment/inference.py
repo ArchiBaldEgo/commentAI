@@ -41,18 +41,25 @@ def _build_pipeline() -> Pipeline:
     ])
 
 def build_default_pipeline() -> Pipeline:
+    """Создаём минимально «инициализированный» пайплайн.
+
+    Важно: нам нужен классификатор в состоянии fitted, чтобы predict/predict_proba
+    не падали на пустой или отсутствующей модели. Поэтому делаем маленький
+    partial_fit с тремя классами (neg/neu/pos) на искусственных примерах.
+    """
+    prep = PreprocessTransformer()
     hv = HashingVectorizer(n_features=2**16, alternate_sign=False)
-    clf = SGDClassifier(loss="log_loss", max_iter=5, tol=1e-3)
+    clf = SGDClassifier(loss="log_loss", max_iter=5, tol=1e-3, random_state=42)
     pipe = Pipeline([
-        ("prep", PreprocessTransformer()),
+        ("prep", prep),
         ("hv", hv),
         ("clf", clf),
     ])
-    # Initialize classifier with dummy samples so it's fitted
-    dummy_texts = ["хорошо", "плохо"]
-    Xv = hv.transform(dummy_texts)
-    y = np.array(["pos", "neg"])  # ensure both classes present
-    clf.partial_fit(Xv, y, classes=np.array(["neg", "pos"]))
+
+    dummy_texts = ["очень хорошо", "нейтрально", "очень плохо"]
+    dummy_labels = np.array(["pos", "neu", "neg"])
+    Xv = hv.transform(prep.transform(dummy_texts))
+    clf.partial_fit(Xv, dummy_labels, classes=np.array(["neg", "neu", "pos"]))
     return pipe
 
 @lru_cache(maxsize=1)
@@ -73,7 +80,9 @@ def save_model(model: Pipeline, model_path: Optional[str] = None) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, p)
     try:
-        classes = list(getattr(model, "classes_", ["neg", "neu", "pos"]))
+        clf = getattr(model, "named_steps", {}).get("clf")
+        raw_classes = getattr(clf, "classes_", ["neg", "neu", "pos"])  # may be numpy dtype
+        classes = [str(c) for c in list(raw_classes)]
         with open(meta, "w", encoding="utf-8") as f:
             json.dump({"classes": classes}, f, ensure_ascii=False)
     except Exception:
@@ -103,24 +112,39 @@ def predict_proba_texts(model, texts: List[str]) -> Tuple[np.ndarray, List[str],
     """Предсказываем вероятности и метки для списка текстов.
     Возвращаем (probs, predicted_labels, classes).
     """
-    # Всегда работаем через Pipeline: prep -> hv -> clf
-    clf = model.named_steps.get("clf")
-    prep = model.named_steps.get("prep")
-    featurizer = model.named_steps.get("hv") or model.named_steps.get("tfidf")
-    processed = prep.transform(texts)
-    Xv = featurizer.transform(processed)
-    # If predict_proba isn't available, fall back to decision_function
-    try:
-        probs = clf.predict_proba(Xv)
-    except Exception:
-        # Map decision function to pseudo-probabilities via softmax
-        scores = clf.decision_function(Xv)
-        if scores.ndim == 1:
-            scores = np.vstack([-scores, scores]).T
-        e = np.exp(scores - scores.max(axis=1, keepdims=True))
-        probs = e / e.sum(axis=1, keepdims=True)
-    classes = list(getattr(clf, "classes_", ["neg", "neu", "pos"]))
+    """Предсказываем вероятности и метки для списка текстов.
 
+    Оптимальный путь — вызвать model.predict_proba(texts) у пайплайна целиком,
+    чтобы sklearn сам выполнил prep/vectorizer корректно. Если у модели нет
+    predict_proba, используем decision_function + softmax.
+    """
+    if hasattr(model, "named_steps"):
+        clf = model.named_steps.get("clf")
+        raw_classes = getattr(clf, "classes_", ["neg", "neu", "pos"])  # may be numpy dtype
+        classes = [str(c) for c in list(raw_classes)]
+        try:
+            probs = model.predict_proba(texts)
+        except Exception:
+            # fallback: decision_function (через пайплайн)
+            scores = model.decision_function(texts)
+            if scores.ndim == 1:
+                scores = np.vstack([-scores, scores]).T
+            e = np.exp(scores - scores.max(axis=1, keepdims=True))
+            probs = e / e.sum(axis=1, keepdims=True)
+    else:
+        # На случай, если передали не Pipeline
+        try:
+            probs = model.predict_proba(texts)
+        except Exception:
+            scores = model.decision_function(texts)
+            if scores.ndim == 1:
+                scores = np.vstack([-scores, scores]).T
+            e = np.exp(scores - scores.max(axis=1, keepdims=True))
+            probs = e / e.sum(axis=1, keepdims=True)
+        raw_classes = getattr(model, "classes_", ["neg", "neu", "pos"])  # may be numpy dtype
+        classes = [str(c) for c in list(raw_classes)]
+
+    probs = np.asarray(probs)
     preds_idx = probs.argmax(axis=1)
     pred_labels = [classes[i] for i in preds_idx]
     return probs, pred_labels, classes

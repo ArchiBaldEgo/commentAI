@@ -1,403 +1,303 @@
-# commentAI — сервис анализа тональности
+## commentAI — учебный сервис анализа тональности и дообучения модели
 
-Лёгкий в развёртывании сервис на FastAPI для классификации тональности (neg/neu/pos) с поддержкой гибридного непрерывного обучения, метрик, ограничений по запросам, безопасностью по API‑ключу и универсальным слоем хранения (файлы/БД).
+Коротко: это локальное веб‑приложение, которое оценивает текстовые комментарии (тональность и рейтинг 1–5) и умеет дообучать модель на новых примерах, сохраняя версии модели на диске.
 
-## Особенности
-- HTTP API совместимо «с любым стеком» (любой сайт/бэкенд).
-- Онлайн‑обучение (микро‑батчи + периодический ретрейн) — без простоя.
-- Минимальная настройка: `.env` + `docker-compose up -d`.
-- Хранилище: файлы по умолчанию; опционально любая БД (SQLAlchemy).
-- Метрики Prometheus, rate‑limit, JSON‑логирование.
+Этот проект демонстрирует полный цикл работы сервиса анализа тональности текстов:
 
-## Структура
-```
-src/sentiment/
-	api.py               # FastAPI приложение
-	inference.py         # загрузка модели, predict_proba, online partial_fit
-	retrain_pipeline.py  # слияние фидбека + базового датасета, тренировка, promotion
-	train.py             # Hashing+SGD тренер для прод-модели
-	preprocess.py        # простая нормализация текста
-	storage.py           # файл/БД хранилище (SQLAlchemy)
-data/                  # данные и артефакты (feedback, csv, sqlite)
-models/production/     # актуальная модель (model.joblib, meta.json)
-deploy/{systemd,nginx,apache}/  # шаблоны деплоя
-```
+- веб‑интерфейс для ввода комментариев;
+- модель, которая определяет тональность (neg/neu/pos) и переводит её в оценку по шкале 1–5;
+- механизм сохранения новых примеров и последующего дообучения модели;
+- возможность собрать приложение в один исполняемый файл для Windows (без отдельной установки Python на компьютере преподавателя).
 
-## Быстрый старт
-Вариант A (Docker):
-```bash
-cp .env.example .env
-docker-compose up --build -d
-# сервис на http://localhost:8000
-# для PostgreSQL: make docker-pg
-# для MySQL:     make docker-mysql
-```
-Вариант B (venv):
-- PostgreSQL через Compose:
-```bash
-cp .env.example .env
-bash scripts/run_docker.sh pg
-# DB_URL уже проставлен на postgres:5432
-```
-- MySQL через Compose:
-```bash
-cp .env.example .env
-bash scripts/run_docker.sh mysql
-# DB_URL уже проставлен на mysql:3306
-```
-```bash
-make bootstrap   # создаст venv, установит deps, обучит модель
-make api         # запустит API на 8000
-# Проверка готовности:
-make check       # ждёт подъём /health
-```
+Ниже описано:
 
-## Обучение модели вручную
-```bash
-source .venv/bin/activate
-PYTHONPATH=src python -m sentiment.train --data data/reviews_labeled.csv --model-dir models/production
-```
-Файл `data/reviews_labeled.csv` должен содержать колонки `text,label` со значениями `neg|neu|pos`.
+- как устроен проект (на высоком уровне);
+- как запустить его из исходников (для разработчика);
+- как подготовить и запустить исполняемый файл под Windows;
+- как наглядно показать преподавателю, что модель действительно обновляется.
 
-## Гибридный режим обучения
-- Онлайн: установите `ONLINE_LEARNING=1` — фидбек из `/feedback` будет добавляться в микро‑батчи для `partial_fit`.
-- Периодический ретрейн: включите `AUTO_RETRAIN_ENABLED=1` и настройте интервалы; либо вызывайте `/retrain` вручную.
+---
 
-## Запуск с БД (PostgreSQL/MySQL)
-Переменные окружения:
-- `STORAGE_MODE=db` — включить запись в БД.
-- `DB_URL` — строка подключения SQLAlchemy: `postgresql+psycopg2://user:pass@host:5432/db` или `mysql+pymysql://user:pass@host:3306/db`.
+## 1. Структура проекта (упрощённо)
 
-Docker Compose оверлеи:
-```bash
-# PostgreSQL
-docker compose -f docker-compose.yml -f deploy/compose.postgres.yml up -d
-# MySQL
-docker compose -f docker-compose.yml -f deploy/compose.mysql.yml up -d
-```
-Таблицы создаются автоматически: `feedback`, `product_scores`. Даже при режиме БД записи также дублируются в файлы (`data/feedback_buffer.jsonl`, `data/product_scores.csv`).
+- src/sentiment
+  - api.py — основное FastAPI‑приложение с API /predict, /feedback, /retrain и т.д.
+  - inference.py — загрузка и сохранение модели, предсказания и онлайн‑обновление.
+  - retrain_pipeline.py — логика переобучения модели на объединённых данных.
+  - train.py — тренировка модели «с нуля» из CSV.
+  - preprocess.py — препроцессинг текста (очистка, токенизация, простая лемматизация).
+  - storage.py — сохранение фидбека и агрегированных оценок в файлы и (опционально) в БД.
+- src/test
+  - server.py — упрощённый FastAPI‑сервер с веб‑интерфейсом для преподавателя.
+  - run_gui.py — запуск GUI: стартует server.py и открывает страницу в браузере.
+  - test.py — консольный скрипт для проверки модели без веб‑части.
+  - templates/index.html — HTML‑шаблон веб‑страницы.
+- data
+  - reviews_labeled.csv — базовый размеченный датасет.
+  - hard_cases_labeled.csv — дополнительные сложные примеры (если есть).
+  - feedback_buffer.jsonl — новые комментарии, собранные через GUI/API.
+  - merged_for_train.csv — объединённый датасет для переобучения (создаётся автоматически).
+  - retrain_status.json — статус последнего переобучения (создаётся автоматически).
+- models
+  - production — текущая «боЕвая» модель, которую использует сервис.
+  - versions — архив версий моделей (папки v_...).
+- commentAI-test.spec — конфигурация PyInstaller для сборки GUI в один файл.
 
-## Конфигурация (.env)
-- Security: `API_KEY=secret`
-- Онлайн‑обучение (гибрид):
-	- `ONLINE_LEARNING=1`
-	- `ONLINE_BATCH_SIZE=16`, `ONLINE_BATCH_INTERVAL_SECONDS=30`, `ONLINE_MAX_LOAD=4.0`
-- Авто‑ретрейн: `AUTO_RETRAIN_ENABLED=1`, `AUTO_RETRAIN_INTERVAL_SECONDS=600`, `AUTO_RETRAIN_MIN_ITEMS=50`
-- Rate‑limit: `RATE_LIMIT_WINDOW_SECONDS=60`, `RATE_LIMIT_MAX_REQUESTS=120`, `RATE_LIMIT_WHITELIST=/health,/metrics`
-- Хранилище: `STORAGE_MODE=file|db`, `DB_URL=` (пусто → SQLite в `data/app.db`)
-	- PostgreSQL: `postgresql+psycopg2://user:pass@host:5432/db`
-	- MySQL: `mysql+pymysql://user:pass@host:3306/db`
-	- Для Docker Compose используйте оверлеи `deploy/compose.postgres.yml` и `deploy/compose.mysql.yml`.
+---
 
-## Запуск с БД (PostgreSQL/MySQL)
+## 2. Запуск проекта из исходников (Linux/Windows, для разработчика)
 
-- Переменные окружения:
-	- `STORAGE_MODE=db` — включить запись в БД
-	- `DB_URL` — строка подключения SQLAlchemy
-- Docker Compose оверлеи:
-	- PostgreSQL:
-		```bash
-		docker compose -f docker-compose.yml -f deploy/compose.postgres.yml up -d
-		```
-	- MySQL:
-		```bash
-		docker compose -f docker-compose.yml -f deploy/compose.mysql.yml up -d
-		```
-Таблицы создаются автоматически: `feedback` и `product_scores`.
+Эти шаги нужны тебе как разработчику (например, на Kali). Преподаватель будет запускать готовый .exe, поэтому ему этот раздел не обязателен.
 
-## Эндпоинты
-- `GET /health` — состояние
-- `GET /labels` — список классов
-- `POST /predict` — пакетные предсказания
-	- тело: `{ "texts": ["Отличный товар", "Плохо"], "model_path": null }`
-	- заголовок: `X-API-Key: <API_KEY>`
-- `POST /product/score` — средняя оценка товара (1..5) + распределение
-	- тело: `{ "productId": "SKU-1", "texts": [..] }`
-- `POST /feedback` — загрузка размеченных примеров (собирается очередь для онлайн‑обучения)
-	- тело: `{ "items": [{"text":"...","label":"pos"}] }`
-- `POST /retrain` — фоноваое переобучение (сливает feedback + labeled, обучает, продвигает в production)
-- `GET /metrics` — Prometheus метрики (запросы, латентность, `sentiment_online_updates_total`)
+### 2.1. Подготовка окружения
 
-Примеры:
-```bash
-curl http://localhost:8000/health
-curl http://localhost:8000/labels
-curl -X POST http://localhost:8000/predict \
-	-H 'Content-Type: application/json' -H 'X-API-Key: secret' \
-	-d '{"texts":["Отличный товар","Плохая упаковка"]}'
-curl -X POST http://localhost:8000/feedback \
-	-H 'Content-Type: application/json' -H 'X-API-Key: secret' \
-	-d '{"items":[{"text":"Супер","label":"pos"},{"text":"Плохо","label":"neg"}]}'
-curl http://localhost:8000/metrics
-```
+1. В корне проекта создать виртуальное окружение:
 
-## Хранилище данных
-- По умолчанию всё пишется в файлы: `data/feedback_buffer.jsonl`, `data/product_scores.csv`.
-- Режим БД: установите `STORAGE_MODE=db` и (необязательно) `DB_URL`; таблицы `feedback` и `product_scores` создадутся автоматически.
-- Файловые артефакты сохраняются и при DB‑режиме (совместимость для ретрейна).
+   - Linux:
+     - python3 -m venv .venv
+     - source .venv/bin/activate
+   - Windows:
+     - python -m venv .venv
+     - .venv\Scripts\activate
 
-## Модель и обучение
-- Продовая модель: Hashing+SGD (`models/production/model.joblib`).
-- Онлайн‑обучение: микро‑батчи из `/feedback` с дедупликацией и ограничением нагрузки по loadavg.
-- Авто‑ретрейн: периодически переобучает на объединении базы + фидбек.
-- Ручной тренинг (пример):
-```bash
-PYTHONPATH=src python -m sentiment.train --data data/sample_reviews.csv --model-dir models/production --char-ngrams
-```
+2. Установить зависимости:
 
-## Логирование и безопасность
-- JSON‑логи запросов: метод, путь, статус, время, IP, UA.
-- Rate‑limit с белым списком путей (`/health`, `/metrics`).
-- Безопасность: `X-API-Key` обязателен для всех POST (если `API_KEY` задан).
+   - pip install --upgrade pip
+   - pip install -r requirements.txt
 
-## Метрики и мониторинг
-- `sentiment_requests_total{endpoint,method,status}`
-- `sentiment_request_latency_seconds{endpoint,method}`
-- `sentiment_online_updates_total`
+### 2.2. Консольная проверка модели
 
-## Деплой
-- Docker/Compose: `.env` + `docker-compose up -d`.
-- systemd: `deploy/systemd/sentiment.service` (обновите `WorkingDirectory` и путь к venv), затем:
-```bash
-sudo cp -r . /opt/sentiment
-cd /opt/sentiment && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-sudo cp deploy/systemd/sentiment.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now sentiment
-```
-- Nginx: `deploy/nginx/sentiment.conf` (proxy на 127.0.0.1:8000)
-- Apache: `deploy/apache/sentiment.conf`
+- Из корня проекта:
 
-## Troubleshooting
-- Нет модели: обучите базовую — `make train`.
-- ImportError (SQLAlchemy/драйвер): `pip install -r requirements.txt` или добавьте нужный драйвер.
-- 401 Unauthorized: проверьте заголовок `X-API-Key` и значение `API_KEY`.
-- 429 Too Many Requests: уменьшите нагрузку или увеличьте лимиты (`RATE_LIMIT_*`).
-- Высокая загрузка: увеличьте `ONLINE_BATCH_INTERVAL_SECONDS`, уменьшите `ONLINE_BATCH_SIZE`, понизьте `ONLINE_MAX_LOAD`.
-- БД недоступна: проверьте `DB_URL` и сетевую доступность; при необходимости вернитесь к `STORAGE_MODE=file`.
+  - python src/test/test.py
 
-## Лицензия
-MIT
+- Скрипт запросит комментарии в консоли и для каждого выведет:
+  - исходный текст;
+  - предсказанную тональность (neg/neu/pos);
+  - оценку по шкале 1–5.
 
-## TL;DR
-- Docker без БД: `cp .env.example .env && bash scripts/run_docker.sh && make check`
-- Docker + PostgreSQL: `cp .env.example .env && make docker-pg && make check`
-- Docker + MySQL: `cp .env.example .env && make docker-mysql && make check`
-- Локально: `make bootstrap && make api && make check`
+### 2.3. Запуск учебного GUI (веб‑интерфейс)
 
-## Примеры интеграции
-- JavaScript (fetch, браузер):
-```js
-const API = 'http://your-host:8000';
-const API_KEY = 'secret';
+- Из корня проекта:
 
-async function predict(texts) {
-	const res = await fetch(`${API}/predict`, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'X-API-Key': API_KEY
-		},
-		body: JSON.stringify({ texts })
-	});
-	if (!res.ok) throw new Error(await res.text());
-	return await res.json();
-}
+  - python src/test/run_gui.py
 
-async function sendFeedback(items) {
-	const res = await fetch(`${API}/feedback`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
-		body: JSON.stringify({ items })
-	});
-	if (!res.ok) throw new Error(await res.text());
-	return await res.json();
-}
+- Скрипт:
+  - запускает FastAPI‑сервер из src/test/server.py на http://127.0.0.1:9000/;
+  - пытается автоматически открыть этот адрес в браузере.
 
-// Пример
-predict(['Отличный товар', 'Плохая упаковка']).then(console.log);
-```
+Если браузер не открылся:
 
-- Node.js (axios):
-```js
-import axios from 'axios';
-const api = axios.create({ baseURL: 'http://your-host:8000', headers: { 'X-API-Key': 'secret' }});
+- открыть любой браузер вручную;
+- ввести адрес http://127.0.0.1:9000/ в строку.
 
-const pred = await api.post('/predict', { texts: ['Классно', 'Ужасно'] });
-console.log(pred.data);
+### 2.4. Запуск «боевого» API (опционально)
 
-await api.post('/feedback', { items: [{ text: 'Классно', label: 'pos' }] });
-```
+Если нужно показать REST‑API поверх основной модели:
 
-- Python (requests):
-```python
-import requests
-API = 'http://your-host:8000'
-headers = {'X-API-Key': 'secret', 'Content-Type': 'application/json'}
+- Linux:
 
-r = requests.post(f'{API}/predict', json={'texts': ['Отлично', 'Плохо']}, headers=headers)
-r.raise_for_status()
-print(r.json())
+  - PYTHONPATH=src uvicorn sentiment.api:app --reload --host 0.0.0.0 --port 8000
 
-fb = requests.post(f'{API}/feedback', json={'items': [{'text':'Средне','label':'neu'}]}, headers=headers)
-fb.raise_for_status()
-print(fb.json())
-```
+- Windows (PowerShell):
 
-- PHP (cURL):
-```php
-<?php
-$ch = curl_init('http://your-host:8000/predict');
-$payload = json_encode([ 'texts' => ['Отлично', 'Плохо'] ]);
-curl_setopt_array($ch, [
-	CURLOPT_POST => 1,
-	CURLOPT_HTTPHEADER => [ 'Content-Type: application/json', 'X-API-Key: secret' ],
-	CURLOPT_POSTFIELDS => $payload,
-	CURLOPT_RETURNTRANSFER => 1
-]);
-$resp = curl_exec($ch);
-if ($resp === false) { throw new Exception(curl_error($ch)); }
-echo $resp; 
-```
+  - $env:PYTHONPATH="src"; uvicorn sentiment.api:app --reload --host 0.0.0.0 --port 8000
 
-- Java (OkHttp):
-```java
-OkHttpClient client = new OkHttpClient();
-MediaType JSON = MediaType.parse("application/json; charset=utf-8");
-RequestBody body = RequestBody.create(JSON, "{\"texts\":[\"Отлично\",\"Плохо\"]}");
-Request req = new Request.Builder()
-		.url("http://your-host:8000/predict")
-		.addHeader("X-API-Key", "secret")
-		.post(body)
-		.build();
-try (Response res = client.newCall(req).execute()) {
-	if (!res.isSuccessful()) throw new IOException("Unexpected " + res);
-	System.out.println(res.body().string());
-}
-```
+Проверка:
 
-- C# (.NET HttpClient):
-```csharp
-using var http = new HttpClient { BaseAddress = new Uri("http://your-host:8000") };
-http.DefaultRequestHeaders.Add("X-API-Key", "secret");
-var resp = await http.PostAsync("/predict", new StringContent("{\"texts\":[\"Отлично\"]}", Encoding.UTF8, "application/json"));
-resp.EnsureSuccessStatusCode();
-Console.WriteLine(await resp.Content.ReadAsStringAsync());
-```
+- GET http://127.0.0.1:8000/health → {"status": "ok"}
+- POST http://127.0.0.1:8000/predict с телом {"texts": ["пример комментария"]}
 
-Подсказки:
-- Для `/product/score` тело: `{ "productId": "SKU-1", "texts": ["..."] }`.
-- Для `/feedback` тело: `{ "items": [{"text":"...","label":"pos|neu|neg"}] }`.
-- Всегда добавляйте заголовок `X-API-Key` для POST, если `API_KEY` включён на сервере.
+---
 
-## SDKs
-- TypeScript: см. `clients/typescript`
-	- Установка: `cd clients/typescript && npm install && npm run build`
-	- Использование:
-		```ts
-		import { SentimentClient } from './clients/typescript/dist/index.js';
-		const client = new SentimentClient({ baseUrl: 'http://localhost:8000', apiKey: 'secret' });
-		const res = await client.predict(['Отлично', 'Плохо']);
-		```
-- Python: см. `clients/python`
-	- Установка: `cd clients/python && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
-	- Использование:
-		```python
-		from sentiment_client import SentimentClient
-		c = SentimentClient(base_url='http://localhost:8000', api_key='secret')
-		print(c.predict(['good', 'bad']))
-		```
+## 3. Что увидит преподаватель в веб‑интерфейсе
 
-## Сниппеты фреймворков
-- React (hooks):
-	```tsx
-	import { useEffect, useState } from 'react';
-	import { SentimentClient } from '../clients/typescript/dist/index.js';
+После перехода на http://127.0.0.1:9000/ откроется страница со следующим содержимым:
 
-	const client = new SentimentClient({ baseUrl: import.meta.env.VITE_API_URL, apiKey: import.meta.env.VITE_API_KEY });
+1. Поле для ввода комментария (текст на русском языке).
+2. Кнопка отправки.
+3. Список ранее введённых комментариев, каждый с:
+   - текстом комментария;
+   - меткой тональности (neg/neu/pos);
+   - оценкой 1–5 (звёздочки).
+4. Средняя оценка по всем комментариям (если они есть).
 
-	export function UsePredictions({ texts }: { texts: string[] }) {
-		const [data, setData] = useState<any>(null);
-		const [err, setErr] = useState<string | null>(null);
-		useEffect(() => {
-			client.predict(texts).then(setData).catch(e => setErr(String(e)));
-		}, [texts]);
-		if (err) return <div>Error: {err}</div>;
-		return <pre>{JSON.stringify(data, null, 2)}</pre>;
-	}
-	```
+Простая логика перевода тональности в оценку 1–5:
 
-- Vue 3 (Composition API):
-	```ts
-	import { ref, onMounted } from 'vue';
+- neg (негатив):
+  - если модель очень уверена — 1 звезда;
+  - если уверенность ниже порога — 2 звезды.
+- neu (нейтрально):
+  - 3 звезды.
+- pos (позитив):
+  - если модель очень уверена — 5 звёзд;
+  - если уверенность ниже порога — 4 звезды.
 
-	export function useSentiment(texts: string[], baseUrl: string, apiKey?: string) {
-		const data = ref<any>(null);
-		const error = ref<string | null>(null);
-		onMounted(async () => {
-			try {
-				const res = await fetch(`${baseUrl}/predict`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'X-API-Key': apiKey } : {}) },
-					body: JSON.stringify({ texts })
-				});
-				if (!res.ok) throw new Error(await res.text());
-				data.value = await res.json();
-			} catch (e:any) { error.value = String(e.message || e); }
-		});
-		return { data, error };
-	}
-	```
+---
 
-- Laravel (HTTP client):
-	```php
-	use Illuminate\Support\Facades\Http;
+## 4. Как модель дообучается на новых комментариях
 
-	$resp = Http::withHeaders([
-			'X-API-Key' => env('SENTIMENT_API_KEY', 'secret')
-		])->post(env('SENTIMENT_URL', 'http://localhost:8000').'/predict', [
-			'texts' => ['Отлично', 'Плохо']
-		])->json();
-	```
+Главная идея проекта — показать, что модель не статична, а дообучается по мере появления новых данных.
 
-- Spring Boot (WebClient):
-	```java
-	@Bean
-	WebClient sentimentWebClient(WebClient.Builder b) {
-		return b.baseUrl("http://localhost:8000").defaultHeader("X-API-Key", "secret").build();
-	}
+1. При каждом вводе комментария через веб‑интерфейс:
+   - модель предсказывает тональность и показывает результат на странице;
+   - текст и метка сохраняются в файл data/feedback_buffer.jsonl.
+2. Параллельно работает фоновый поток дообучения (для учебного GUI он запускается в src/test/server.py при старте программы).
+3. Этот поток периодически:
+   - читает базовый размеченный датасет data/reviews_labeled.csv (и, при наличии, data/hard_cases_labeled.csv);
+   - читает все новые размеченные примеры из data/feedback_buffer.jsonl;
+   - объединяет их в один датасет data/merged_for_train.csv;
+   - обучает новую модель и кладёт её в папку models/versions/v_<timestamp>;
+   - обновляет рабочую модель в models/production;
+   - записывает информацию о последнем обучении в data/retrain_status.json.
 
-	public Mono<Map> predict(WebClient wc, List<String> texts) {
-		return wc.post().uri("/predict")
-			.bodyValue(Map.of("texts", texts))
-			.retrieve().bodyToMono(Map.class);
-	}
-	```
+Таким образом, по мере работы преподавателя и ввода им новых комментариев, модель постепенно обновляется и учитывает новые примеры.
 
-- .NET (IHttpClientFactory):
-	```csharp
-	public class SentimentService {
-		private readonly HttpClient _http;
-		public SentimentService(HttpClient http) { _http = http; }
-		public async Task<string> PredictAsync(IEnumerable<string> texts) {
-			using var content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { texts }), System.Text.Encoding.UTF8, "application/json");
-			var req = new HttpRequestMessage(HttpMethod.Post, "/predict");
-			req.Headers.Add("X-API-Key", "secret");
-			req.Content = content;
-			var resp = await _http.SendAsync(req);
-			resp.EnsureSuccessStatusCode();
-			return await resp.Content.ReadAsStringAsync();
-		}
-	}
-	// Program.cs
-	builder.Services.AddHttpClient<SentimentService>(c => c.BaseAddress = new Uri("http://localhost:8000"));
-	```
+---
 
-## Справочник переменных окружения
-- `API_KEY`: ключ для заголовка `X-API-Key` (обязателен для POST, если задан)
-- Онлайн‑обучение:
-	- `ONLINE_LEARNING` (0/1): включить очередь микро‑батчей
-	- `ONLINE_BATCH_SIZE` (16): размер пакета partial_fit
-	- `ONLINE_BATCH_INTERVAL_SECONDS` (30): макс. интервал между пакетами
+## 5. Как убедиться, что модель действительно обновилась
+
+Чтобы наглядно показать преподавателю эффект дообучения, можно выполнить следующий сценарий.
+
+### 5.1. Зафиксировать исходную версию
+
+1. Перед вводом новых комментариев открыть файл models/production/VERSION:
+   - внутри будет имя текущей версии, например v_1764850570.
+2. Проверить наличие файла data/retrain_status.json:
+   - если его нет, он появится после первого переобучения.
+
+### 5.2. Ввести новые комментарии
+
+1. Через веб‑интерфейс ввести несколько явно позитивных комментариев, например:
+   - «Отличный товар, всё понравилось, буду брать ещё»;
+   - «Очень доволен качеством и доставкой, рекомендую всем»;
+   - «Супер сервис, быстро, аккуратно, всё как надо».
+2. Подождать 20–30 секунд (фоновый поток успеет запустить обучение).
+
+### 5.3. Проверить новую версию и статус обучения
+
+1. Снова открыть файл models/production/VERSION:
+   - значение должно измениться на более свежую версию вида v_<timestamp>.
+2. Открыть data/retrain_status.json:
+   - поле status должно быть success (если всё прошло успешно);
+   - поле version_dir укажет папку с новой версией (внутри models/versions);
+   - поля base_rows, feedback_rows, total_rows покажут статистику по данным.
+
+### 5.4. Сравнить поведение модели до и после
+
+1. До дообучения:
+   - ввести несколько «пограничных» комментариев (неявно позитивных/негативных);
+   - запомнить или записать тональности и оценки.
+2. После дообучения:
+   - ввести похожие комментарии снова;
+   - сравнить: модель может чаще отвечать позитивно/негативно в зависимости от новых примеров.
+
+---
+
+## 6. Сборка в исполняемый файл (PyInstaller)
+
+### 6.1. Ограничения по платформе
+
+- Сборка «родного» .exe для Windows из Linux напрямую затруднена: PyInstaller не поддерживает полноценный кросс‑компилятор.
+- На Kali/Linux можно собрать самостоятельный бинарник для Linux.
+- Чтобы получить настоящий .exe для преподавателя, лучше запустить сборку на Windows.
+
+Ниже — оба варианта.
+
+### 6.2. Сборка под Linux (твоя текущая машина)
+
+1. В корне проекта создать и активировать виртуальное окружение:
+   - python3 -m venv .venv
+   - source .venv/bin/activate
+2. Установить зависимости и PyInstaller:
+   - pip install -r requirements.txt pyinstaller
+3. Собрать бинарник по готовому spec‑файлу:
+   - pyinstaller commentAI-test.spec
+4. Результат:
+   - в папке dist/commentAI-test появится исполняемый файл commentAI-test (без расширения .exe);
+   - рядом будут нужные библиотеки и данные (включая шаблоны HTML).
+5. Запуск под Linux:
+   - из папки dist/commentAI-test выполнить ./commentAI-test;
+   - далее сценарий работы такой же, как описано в разделах про GUI (откроется страница на http://127.0.0.1:9000/).
+
+### 6.3. Сборка настоящего .exe на Windows
+
+На Windows нужно повторить похожие шаги, но уже на самой системе преподавателя или на отдельной виртуалке:
+
+1. Установить Python 3.10+ для Windows (официальный дистрибутив с python.org).
+2. Скопировать (или склонировать) проект на Windows‑машину.
+3. В корне проекта создать виртуальное окружение:
+   - python -m venv .venv
+   - .venv\Scripts\activate
+4. Установить зависимости:
+   - pip install -r requirements.txt pyinstaller
+5. Собрать .exe по commentAI-test.spec:
+   - pyinstaller commentAI-test.spec
+6. Результат:
+   - в dist/commentAI-test появится commentAI-test.exe.
+7. Сформировать папку для преподавателя, например commentAI-demo:
+   - скопировать dist/commentAI-test/commentAI-test.exe;
+   - скопировать каталоги models и data рядом с .exe;
+   - при желании добавить этот README.
+
+#### Вариант без «локальной» Windows: GitHub Actions
+
+Если у тебя только Linux (Kali) и нет Windows‑машины, удобный способ собрать Windows `.exe` — через GitHub Actions:
+
+1. Запушить проект в GitHub репозиторий.
+2. Открыть вкладку **Actions** → выбрать workflow `build-windows-exe` → нажать **Run workflow**.
+3. Дождаться завершения.
+4. Скачать артефакт `commentAI-demo-windows.zip`.
+
+Workflow уже добавлен в репозиторий: [.github/workflows/build-windows.yml](.github/workflows/build-windows.yml)
+
+---
+
+## 9. Пакет для преподавателя (что именно отдавать)
+
+Преподавателю отдаётся один архив/папка `commentAI-demo`, внутри:
+
+- `commentAI-test.exe`
+- `data/` (минимум `reviews_labeled.csv`)
+- `models/production/` (модель и VERSION)
+
+Важно: в собранном приложении рабочая директория фиксируется на папку, где лежит `.exe`. Поэтому `data/` и `models/` должны лежать рядом с `.exe`.
+
+---
+
+## 7. Как преподавателю запускать .exe (без установки Python)
+
+1. Открыть папку commentAI-demo.
+2. Дважды кликнуть по commentAI-test.exe.
+3. При предупреждении Windows о неизвестном издателе:
+   - нажать «Подробнее» → «Выполнить в любом случае».
+4. Дождаться появления консольного окна и открытия браузера с http://127.0.0.1:9000/.
+5. Дальше работать только через веб‑страницу:
+   - вводить комментарии;
+   - смотреть тональность и оценку;
+   - при желании — по инструкции из раздела 5 открыть файлы VERSION и retrain_status.json, чтобы увидеть смену версии.
+
+Чтобы завершить работу:
+
+- закрыть консольное окно, запущенное с .exe;
+- либо нажать Ctrl + C в этом окне.
+
+---
+
+## 8. Краткое резюме (для отчёта)
+
+- Реализован сервис анализа тональности текстов (neg/neu/pos) на FastAPI.
+- Есть учебный GUI для преподавателя, позволяющий:
+  - вводить комментарии;
+  - видеть предсказанную тональность и оценку 1–5;
+  - генерировать новые размеченные данные для дообучения.
+- Фоновые процессы:
+  - собирают фидбек в data/feedback_buffer.jsonl;
+  - периодически переобучают модель;
+  - сохраняют новые версии в models/versions и обновляют models/production.
+- Для демонстрации без Python:
+  - проект может быть упакован в один исполняемый файл commentAI-test.exe с помощью PyInstaller;
+  - преподавателю достаточно запустить этот файл и работать через браузер.
 	- `ONLINE_MAX_LOAD` (4.0): порог loadavg (1m), выше — откладывать обучение
 - Авто‑ретрейн:
 	- `AUTO_RETRAIN_ENABLED` (0/1)

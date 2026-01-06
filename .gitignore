@@ -14,7 +14,9 @@ dist/
 *.egg
 pip-wheel-metadata/
 *.manifest
+# PyInstaller spec is part of the project
 *.spec
+!commentAI-test.spec
 
 # Virtual environments / tools
 .venv/
@@ -45,14 +47,15 @@ logs/
 # Keep curated datasets in git; ignore runtime/generated artifacts
 /data/feedback_buffer.jsonl
 /data/merged_for_train.csv
+/data/retrain_status.json
 /data/*.db
 /data/*.sqlite
 /data/*.sqlite3
 /data/*.log
 
-# Models (generated)
-/models/production/
-/models/version_*/
+# Models
+# В репозитории держим только production-модель для демо.
+/models/versions/
 
 # ---- Clients (TypeScript / Node) ----
 clients/**/node_modules/

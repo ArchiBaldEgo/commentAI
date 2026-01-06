@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>commentAI — тест тональности</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 20px auto; }
+        h1 { margin-bottom: 0.5rem; }
+        form { margin: 1rem 0; }
+        textarea { width: 100%; height: 80px; }
+        .score { font-weight: bold; margin-top: 0.5rem; }
+        .comment { border-bottom: 1px solid #ddd; padding: 0.5rem 0; }
+        .label-neg { color: #c00; }
+        .label-neu { color: #555; }
+        .label-pos { color: #090; }
+        .avg { margin-bottom: 1rem; }
+    </style>
+</head>
+<body>
+<h1>commentAI — тест тональности</h1>
+
+<div class="avg">
+    <div><strong>Время сервера:</strong> {{ server_time }}</div>
+    <div><strong>Корень проекта/релиза:</strong> {{ app_root }}</div>
+    <div><strong>Текущая версия модели (production):</strong> {{ model_version }}</div>
+    <div><strong>Количество примеров в feedback_buffer.jsonl:</strong> {{ feedback_lines }}</div>
+</div>
+
+{% if retrain_status %}
+<div class="avg">
+    <div><strong>Последний retrain:</strong> {{ retrain_status.status }}</div>
+    {% if retrain_status.version_dir %}
+        <div><strong>Новая версия:</strong> {{ retrain_status.version_dir }}</div>
+    {% endif %}
+    {% if retrain_status.total_rows %}
+        <div><strong>Данные:</strong> base={{ retrain_status.base_rows }}, feedback={{ retrain_status.feedback_rows }}, total={{ retrain_status.total_rows }}</div>
+    {% endif %}
+    {% if retrain_status.error %}
+        <div><strong>Ошибка:</strong> {{ retrain_status.error }}</div>
+    {% endif %}
+</div>
+{% endif %}
+
+<form method="post" action="/predict">
+    <label for="comment">Комментарий:</label><br>
+    <textarea id="comment" name="comment" required></textarea><br>
+
+    <label for="label_override"><strong>Разметка для дообучения (доказательство обучения)</strong></label><br>
+    <select id="label_override" name="label_override">
+        <option value="model" selected>как сказала модель (не исправлять)</option>
+        <option value="pos">pos (позитив)</option>
+        <option value="neu">neu (нейтрально)</option>
+        <option value="neg">neg (негатив)</option>
+    </select>
+    <br><br>
+
+    <button type="submit">Отправить</button>
+</form>
+
+<form method="post" action="/retrain_now" style="margin-top: 0;">
+    <button type="submit">Переобучить модель сейчас (retrain)</button>
+    <div style="font-size: 0.9rem; color: #555; margin-top: 0.25rem;">
+        Кнопка запускает переобучение в фоне. После ~1–10 секунд обновите страницу и проверьте VERSION/статус.
+    </div>
+</form>
+
+    <p>
+        <strong>Подсказка.</strong><br>
+        Модель использует простый статистический подход (Pipeline scikit-learn)
+        и обучена на ограниченном стартовом наборе размеченных отзывов
+        (порядка нескольких сотен примеров). Дополнительно она постоянно
+        дообучается на комментариях, которые вы вводите в эту форму.
+        Для промышленных систем обычно используют тысячи и десятки тысяч
+        примеров, поэтому здесь демонстрируется именно учебный прототип,
+        а не промышленная модель.
+    </p>
+
+    {% if last_probs %}
+    <h2>Как модель оценила последний комментарий</h2>
+    <p>
+        Здесь показано, как модель распределяет вероятность между тремя классами
+        тональности для <strong>последнего введённого комментария</strong>.
+        Это нужно, чтобы увидеть «внутренние» веса модели.
+    </p>
+    <ul>
+        {% for label, p in last_probs.items() %}
+            <li>{{ label }}: {{ '%.2f' % (p * 100) }}%</li>
+        {% endfor %}
+        {% if last_pred_label %}
+            <li><strong>Предсказание модели:</strong> {{ last_pred_label }}</li>
+        {% endif %}
+        {% if last_saved_label %}
+            <li><strong>Сохранённая метка для обучения:</strong> {{ last_saved_label }}</li>
+        {% endif %}
+        <li>Сумма ≈ 100% (из-за округления может немного отличаться).</li>
+        <li>Окончательный класс берётся по наибольшей вероятности.</li>
+        <li>Чем больше вы вводите комментариев и даёте модели примеров,
+            тем сильнее эти вероятности подстраиваются под ваши данные.</li>
+    </ul>
+    {% endif %}
+
+    {% if avg_score is not none %}
+    <div class="avg">
+        Средняя оценка всех комментариев: {{ '%.2f' % avg_score }}/5
+    </div>
+    {% endif %}
+
+    <h2>Последние комментарии</h2>
+    {% if comments %}
+        {% for c in comments %}
+            <div class="comment">
+                <div>{{ c.text }}</div>
+                <div class="score">
+                    Оценка: {{ '%.1f' % c.score }}/5,
+                    Тональность (модель):
+                    <span class="label-{{ c.pred_label or c.label }}">{{ c.pred_label or c.label }}</span>
+                    {% if c.pred_label and c.label and c.pred_label != c.label %}
+                        <span style="color:#555; font-weight: normal;"> | разметка для обучения: {{ c.label }}</span>
+                    {% endif %}
+                </div>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p>Пока нет комментариев.</p>
+    {% endif %}
+
+</body>
+</html>

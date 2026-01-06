@@ -13,10 +13,56 @@ import pandas as pd
 DATA_DIR = Path("data")
 FEEDBACK_FILE = DATA_DIR / "feedback_buffer.jsonl"
 LABELED_FILE = DATA_DIR / "reviews_labeled.csv"
+HARD_CASES_FILE = DATA_DIR / "hard_cases_labeled.csv"
 MODELS_DIR = Path("models")
 PROD_DIR = MODELS_DIR / "production"
 VERSIONS_DIR = MODELS_DIR / "versions"
 RETRAIN_STATUS = DATA_DIR / "retrain_status.json"
+
+
+def _read_labeled_csv_robust(path: Path) -> pd.DataFrame:
+    """Читаем CSV с колонками text,label, устойчиво к запятым внутри текста.
+
+    В учебных датасетах часто встречается формат:
+        text,label
+        Ужасно, полный брак,neg
+
+    То есть текст не экранирован кавычками, и запятые внутри текста ломают
+    стандартный CSV-парсер. В таком случае используем правило:
+    - последняя "колонка" после последней запятой — это label
+    - всё до неё (с запятыми) — это text
+    """
+    try:
+        df = pd.read_csv(path)
+        if {"text", "label"}.issubset(df.columns):
+            return df
+        # иногда встречается sentiment вместо label
+        if {"text", "sentiment"}.issubset(df.columns):
+            return df.rename(columns={"sentiment": "label"})
+    except Exception:
+        pass
+
+    rows: list[dict] = []
+    with path.open("r", encoding="utf-8") as f:
+        header_seen = False
+        for line in f:
+            line = line.strip("\n\r")
+            if not line.strip():
+                continue
+            if not header_seen:
+                # пропускаем заголовок вида text,label или text,sentiment
+                header_seen = True
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                continue
+            label = parts[-1].strip().lower()
+            text = ",".join(parts[:-1]).strip()
+            if not text or not label:
+                continue
+            rows.append({"text": text, "label": label})
+
+    return pd.DataFrame(rows)
 
 
 def merge_labeled_and_feedback() -> tuple[Path, int, int, int]:
@@ -28,7 +74,7 @@ def merge_labeled_and_feedback() -> tuple[Path, int, int, int]:
     if not LABELED_FILE.exists():
         raise RuntimeError("Base labeled dataset not found: data/reviews_labeled.csv")
 
-    df_base = pd.read_csv(LABELED_FILE)
+    df_base = _read_labeled_csv_robust(LABELED_FILE)
     df_base = df_base.rename(columns={"sentiment": "label"})
     frames = []
     base_rows = 0
@@ -38,6 +84,14 @@ def merge_labeled_and_feedback() -> tuple[Path, int, int, int]:
         df_base = df_base[["text", "label"]].dropna()
         base_rows = len(df_base)
         frames.append(df_base)
+
+    # добавляем вручную размеченные "хитрые" фразы, если они есть
+    if HARD_CASES_FILE.exists():
+        df_hard = _read_labeled_csv_robust(HARD_CASES_FILE)
+        if {"text", "label"}.issubset(df_hard.columns):
+            df_hard = df_hard[["text", "label"]].dropna()
+            if not df_hard.empty:
+                frames.append(df_hard)
 
     if FEEDBACK_FILE.exists():
         rows = []
@@ -129,6 +183,19 @@ def run_retrain(class_weight: Optional[str] = "balanced", char_ngrams: bool = Tr
 
         status["status"] = "success"
         status["version_dir"] = str(version_dir)
+
+        # Оставляем только последние 5 версий, старые удаляем, чтобы папка не разрасталась бесконечно.
+        try:
+            all_versions = sorted(
+                [p for p in VERSIONS_DIR.iterdir() if p.is_dir()],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for old in all_versions[5:]:
+                shutil.rmtree(old, ignore_errors=True)
+        except Exception:
+            # Очистка версий — вспомогательная операция, падаем тихо, чтобы не ломать ретрейн.
+            pass
     except Exception as e:  # noqa: BLE001
         status["status"] = "error"
         status["error"] = str(e)

@@ -1,0 +1,11 @@
+{
+  "algorithm": "sgd",
+  "vectorizer": "hashing+tfidf",
+  "char_ngrams": true,
+  "classes": [
+    "neg",
+    "neu",
+    "pos"
+  ],
+  "version": "v_1767715996"
+}

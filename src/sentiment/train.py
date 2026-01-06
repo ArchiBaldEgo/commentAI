@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import pandas as pd
+from pandas.errors import ParserError
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.feature_extraction.text import HashingVectorizer, TfidfTransformer
 from sklearn.linear_model import SGDClassifier
@@ -61,7 +62,28 @@ def main(args: list[str] | None = None):
     parser.add_argument('--char-ngrams', action='store_true', help='Include char ngrams branch')
     ns = parser.parse_args(args=args)
 
-    df = pd.read_csv(ns.data)
+    try:
+        df = pd.read_csv(ns.data)
+    except ParserError:
+        # Учебный fallback: если в тексте есть запятые без кавычек, pd.read_csv падает.
+        # Тогда парсим строку вручную: последняя "колонка" — label, остальное — text.
+        rows = []
+        with open(ns.data, "r", encoding="utf-8") as f:
+            header_seen = False
+            for line in f:
+                line = line.strip("\n\r")
+                if not line.strip():
+                    continue
+                if not header_seen:
+                    header_seen = True
+                    continue
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                label = parts[-1].strip().lower()
+                text = ",".join(parts[:-1]).strip()
+                rows.append({"text": text, "label": label})
+        df = pd.DataFrame(rows)
     label_col = 'label' if 'label' in df.columns else 'sentiment'
     if 'text' not in df.columns or label_col not in df.columns:
         raise ValueError('CSV must contain columns: text and label/sentiment')

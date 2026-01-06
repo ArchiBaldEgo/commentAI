@@ -1,0 +1,58 @@
+name: build-windows-exe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build exe (PyInstaller)
+        run: |
+          pyinstaller commentAI-test.spec
+
+      - name: Assemble demo folder
+        shell: pwsh
+        run: |
+          $demoDir = "release/commentAI-demo"
+          if (Test-Path $demoDir) { Remove-Item $demoDir -Recurse -Force }
+          New-Item -ItemType Directory -Path $demoDir | Out-Null
+
+          Copy-Item -Path "dist/commentAI-test/commentAI-test.exe" -Destination $demoDir
+
+          New-Item -ItemType Directory -Path "$demoDir/data" | Out-Null
+          Copy-Item -Path "data/reviews_labeled.csv" -Destination "$demoDir/data"
+          if (Test-Path "data/hard_cases_labeled.csv") { Copy-Item "data/hard_cases_labeled.csv" "$demoDir/data" }
+          if (Test-Path "data/feedback_buffer.jsonl") { Copy-Item "data/feedback_buffer.jsonl" "$demoDir/data" }
+          if (Test-Path "data/retrain_status.json") { Copy-Item "data/retrain_status.json" "$demoDir/data" }
+
+          New-Item -ItemType Directory -Path "$demoDir/models" | Out-Null
+          Copy-Item -Path "models/production" -Destination "$demoDir/models" -Recurse
+          New-Item -ItemType Directory -Path "$demoDir/models/versions" | Out-Null
+
+          Copy-Item -Path "README.md" -Destination $demoDir
+          if (Test-Path "INSTRUCTIONS_FOR_TEACHER.txt") { Copy-Item "INSTRUCTIONS_FOR_TEACHER.txt" $demoDir }
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          if (Test-Path "release/commentAI-demo-windows.zip") { Remove-Item "release/commentAI-demo-windows.zip" -Force }
+          Compress-Archive -Path "release/commentAI-demo" -DestinationPath "release/commentAI-demo-windows.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: commentAI-demo-windows
+          path: release/commentAI-demo-windows.zip

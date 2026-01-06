@@ -317,7 +317,7 @@ def labels(request: Request):
     model = load_model_cached()
     try:
         clf = model.named_steps["clf"]
-        cls = list(getattr(clf, "classes_", []))
+        cls = [str(c) for c in list(getattr(clf, "classes_", []))]
     except Exception:
         cls = list(getattr(model, "classes_", ["neg", "neu", "pos"]))
     start = time.time()

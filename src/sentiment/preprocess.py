@@ -8,24 +8,8 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 import re
 import string
-from typing import List
 
 from .lexicon import RU_POS_LEXICON, RU_NEG_LEXICON, RU_PRICE, RU_DELIVERY, RU_QUALITY, RU_SERVICE
-
-
-class PreprocessTransformer(BaseEstimator, TransformerMixin):
-    """Упрощённый трансформер: чистим пробелы/регистр для базовой совместимости."""
-    def fit(self, X: Iterable[str], y=None):
-        return self
-
-    def transform(self, X: Iterable[str]) -> List[str]:
-        return [self._norm(x) for x in X]
-
-    @staticmethod
-    def _norm(text: str) -> str:
-        if not isinstance(text, str):
-            text = str(text)
-        return " ".join(text.strip().lower().split())
 
 # Простые списки стоп-слов (можно расширять)
 RU_STOP = {
@@ -105,11 +89,15 @@ def preprocess_text(text: str) -> str:
         tokens.extend(tags)
     return " ".join(tokens)
 
-
 class PreprocessTransformer(BaseEstimator, TransformerMixin):
-    """Более «умный» трансформер для использования в продакшене пайплайна."""
-    def fit(self, X, y=None):  # type: ignore
+    """Трансформер для использования в продакшене пайплайна.
+
+    Полный цикл: нормализация, токенизация, удаление стоп-слов, грубая лемматизация
+    и добавление специальных маркеров по лексикону.
+    """
+
+    def fit(self, X: Iterable[str], y=None):  # type: ignore
         return self
 
-    def transform(self, X):  # type: ignore
+    def transform(self, X: Iterable[str]):  # type: ignore
         return [preprocess_text(x) for x in X]
